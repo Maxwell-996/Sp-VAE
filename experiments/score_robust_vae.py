@@ -220,7 +220,7 @@ def main() -> None:
     parser.add_argument("--train-samples", type=int, default=4)
     parser.add_argument("--valid-samples", type=int, default=4)
     parser.add_argument("--noise-cutoff", type=float, default=0.20)
-    parser.add_argument("--noise-amplitude", type=float, default=0.10)
+    parser.add_argument("--noise-amplitude", type=float, default=0.05)
     parser.add_argument("--transition", type=float, default=0.04)
     args = parser.parse_args()
 

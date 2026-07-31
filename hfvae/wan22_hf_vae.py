@@ -48,9 +48,7 @@ class WanVAEHF(WanVAE_):
             self.decoder.head[-1] = CausalConv3d(dec_in, dec_out, 3, padding=1)
 
         self.encoder_antialias = (
-            BlurPool2d(self.input_channels, filt_size=5, boundary="circular")
-            if anti_alias
-            else None
+            BlurPool2d(self.input_channels, boundary="circular") if anti_alias else None
         )
         self.latent_hfs = (
             HighFrequencyScaling2d(self.z_dim, cutoff=hfs_cutoff, init_high=1.0)

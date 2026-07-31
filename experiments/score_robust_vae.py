@@ -91,7 +91,7 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
                 "--lambda-lowpass",
                 "0.5",
                 "--lambda-hf",
-                "0.05",
+                "0.10",
                 "--lambda-latent-consistency",
                 "0.05",
                 "--lowpass-cutoff",

@@ -24,6 +24,7 @@ class HFVAELossConfig:
     lambda_spectral: float = 0.0
     lambda_sobolev: float = 0.0
     lambda_latent_consistency: float = 0.0
+    lambda_noisy_reconstruction: float = 0.0
     lowpass_cutoff: float = 0.35
     highpass_cutoff: float = 0.35
     transition: float = 0.08
@@ -103,7 +104,9 @@ def compute_vae_loss(
         loss = loss + cfg.lambda_sobolev * sob
         parts["sobolev"] = float(sob.detach())
 
-    if cfg.lambda_latent_consistency:
+    x_aug = None
+    mu_aug = None
+    if cfg.lambda_latent_consistency or cfg.lambda_noisy_reconstruction:
         x_aug = latent_consistency_target(
             x,
             cutoff=cfg.highpass_cutoff,
@@ -111,6 +114,14 @@ def compute_vae_loss(
             transition=cfg.transition,
         )
         mu_aug, _ = model.encode_dist(x_aug, [0, 1])
+
+    if cfg.lambda_noisy_reconstruction:
+        recon_aug = model.decode(mu_aug, [0, 1])
+        noisy_rec = base_reconstruction_loss(recon_aug, x)
+        loss = loss + cfg.lambda_noisy_reconstruction * noisy_rec
+        parts["noisy_reconstruction"] = float(noisy_rec.detach())
+
+    if cfg.lambda_latent_consistency:
         cons = F.mse_loss(mu_aug.float(), mu.detach().float())
         loss = loss + cfg.lambda_latent_consistency * cons
         parts["latent_consistency"] = float(cons.detach())

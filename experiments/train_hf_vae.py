@@ -93,7 +93,7 @@ def main() -> None:
     ap.add_argument("--beta-kl", type=float, default=1e-4)
     ap.add_argument("--lambda-lowpass", type=float, default=0.5)
     ap.add_argument("--lambda-hf", type=float, default=0.05)
-    ap.add_argument("--lambda-spectral", type=float, default=0.01)
+    ap.add_argument("--lambda-spectral", type=float, default=0.0)
     ap.add_argument("--lambda-sobolev", type=float, default=0.05)
     ap.add_argument("--lambda-latent-consistency", type=float, default=0.05)
     ap.add_argument("--lambda-noisy-reconstruction", type=float, default=0.05)

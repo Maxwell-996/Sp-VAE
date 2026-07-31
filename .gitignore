@@ -1,0 +1,15 @@
+# Nested reference repositories and local experiment tooling.
+Wan2.2/
+codex-autoresearch/
+
+# Regenerable experiment artifacts.
+runs/
+autoresearch-results/
+
+# Python caches and local test outputs.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/

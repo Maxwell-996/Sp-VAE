@@ -53,6 +53,7 @@ z\sim q_\phi(z|x),\qquad \hat{x}=D_\theta(z).
 - `hfvae/wan22_hf_vae.py`：在本地 Wan2.2 VAE 上加 anti-alias、latent HFS、output HFS、decoder spectral filter。
 - `experiments/train_hf_vae.py`：只读 NS shard 数据，训练改进 VAE。
 - `experiments/eval_hf_vae.py`：重建 relL2、低频 relL2、高频 relL2、高频能量。
+- `experiments/score_robust_vae.py`：固定种子/预算的 clean + 高频扰动恢复 benchmark，结果只写临时目录。
 - `experiments/cache_vae_latents.py`：把 VAE embedding 缓存在本目录。
 - `experiments/train_latent_operator.py`：用同一 latent 数据测试 FNO、Transolver、CNextU 的自回归。
 
@@ -65,8 +66,9 @@ python experiments/train_hf_vae.py \
   --tag hfs_lp \
   --epochs 100 --batch 2 --t-clip 49 --dim 96 --z-dim 16 \
   --anti-alias --latent-hfs --output-hfs --decoder-spectral-filter \
-  --filter-cutoff 0.45 \
+  --filter-cutoff 0.20 --hfs-cutoff 0.20 \
   --lambda-lowpass 0.5 --lambda-hf 0.05 --lambda-latent-consistency 0.05 \
+  --lowpass-cutoff 0.10 --highpass-cutoff 0.20 --transition 0.04 \
   --amp --lazy
 
 python experiments/eval_hf_vae.py \

@@ -115,6 +115,8 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
                 "0",
                 "--lambda-latent-consistency",
                 "0",
+                "--lambda-noisy-reconstruction",
+                "0",
             ]
         )
 

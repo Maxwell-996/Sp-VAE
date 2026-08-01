@@ -14,4 +14,5 @@ The `/media/home/lizhonghao/diff_pde` repository is treated as read-only referen
 - `experiments/score_robust_vae.py`: fixed, side-effect-free autoresearch benchmark.
 - `experiments/cache_vae_latents.py`: encode VAE embeddings into local latent caches.
 - `experiments/train_latent_operator.py`: latent autoregressive tests for FNO, Transolver, and CNextU.
+- `experiments/eval_operator_physical.py`: decode latent rollouts and measure physical-field error.
 - `docs/high_frequency_robust_vae.md`: math notes and recommended commands.

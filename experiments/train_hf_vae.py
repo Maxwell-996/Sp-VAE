@@ -101,7 +101,7 @@ def main() -> None:
     ap.add_argument("--lambda-spectral", type=float, default=0.0)
     ap.add_argument("--lambda-sobolev", type=float, default=0.05)
     ap.add_argument("--lambda-latent-consistency", type=float, default=0.05)
-    ap.add_argument("--lambda-noisy-reconstruction", type=float, default=0.05)
+    ap.add_argument("--lambda-noisy-reconstruction", type=float, default=0.0)
     ap.add_argument("--lambda-temporal", type=float, default=0.0)
     ap.add_argument("--lowpass-cutoff", type=float, default=0.35)
     ap.add_argument("--highpass-cutoff", type=float, default=0.35)

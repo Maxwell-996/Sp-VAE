@@ -61,29 +61,30 @@ z\sim q_\phi(z|x),\qquad \hat{x}=D_\theta(z).
 
 ```bash
 python experiments/train_hf_vae.py \
-  --data-root /media/home/lizhonghao/diff_pde/data \
+  --data-root /media/home/lizhonghao/diff_pde/data_128 \
   --out-dir runs/hf_vae/hfs_lp \
   --tag hfs_lp \
   --epochs 100 --batch 2 --t-clip 49 --dim 96 --z-dim 16 \
   --anti-alias --latent-hfs --output-hfs --decoder-spectral-filter \
-  --filter-cutoff 0.20 --hfs-cutoff 0.20 \
-  --lambda-lowpass 0.5 --lambda-hf 0.05 --lambda-latent-consistency 0.05 \
-  --lowpass-cutoff 0.10 --highpass-cutoff 0.20 --transition 0.04 \
+  --filter-cutoff 0.15 --hfs-cutoff 0.15 \
+  --lambda-lowpass 0.5 --lambda-hf 0.10 --lambda-latent-consistency 0.05 \
+  --lambda-noisy-reconstruction 0 \
+  --lowpass-cutoff 0.10 --highpass-cutoff 0.15 --transition 0.04 \
   --amp --lazy
 
 python experiments/eval_hf_vae.py \
   --ckpt runs/hf_vae/hfs_lp/hfs_lp_best.pt \
-  --data-root /media/home/lizhonghao/diff_pde/data \
+  --data-root /media/home/lizhonghao/diff_pde/data_128 \
   --split valid --out-csv runs/hf_vae/hfs_lp/eval_valid.csv
 
 python experiments/cache_vae_latents.py \
   --ckpt runs/hf_vae/hfs_lp/hfs_lp_best.pt \
-  --data-root /media/home/lizhonghao/diff_pde/data \
+  --data-root /media/home/lizhonghao/diff_pde/data_128 \
   --split train --out-root runs/latents/hfs_lp
 
 python experiments/cache_vae_latents.py \
   --ckpt runs/hf_vae/hfs_lp/hfs_lp_best.pt \
-  --data-root /media/home/lizhonghao/diff_pde/data \
+  --data-root /media/home/lizhonghao/diff_pde/data_128 \
   --split valid --out-root runs/latents/hfs_lp
 
 python experiments/train_latent_operator.py \
@@ -108,12 +109,57 @@ python experiments/train_latent_operator.py \
 
 5. **下游三架构比较的解释**：FNO 有强低频/谱截断先验；Transolver 更依赖 token attention 捕捉物理相关；CNextU 有局部卷积归纳偏置。若鲁棒 VAE embedding 真的更好，应在 rollout_rel 上至少不输 raw/普通 VAE，并且在 FNO 与 Transolver 上更明显。
 
+## 实验结果（data_128）
+
+所有结果使用 `/media/home/lizhonghao/diff_pde/data_128` 的 6 个 regime，train/valid/test 分别为 1200/240/240 条轨迹，VAE 输入为 `49x128x128`，latent 为 `(16,13,8,8)`。`vanilla_ft` 和 `hf_noisy0` 都从同一个 Wan checkpoint 开始，在同一数据上训练 1 epoch；算子固定 history=4、hidden=64、30 epochs、seed=3407，并在独立 test 上评估。
+
+### VAE valid
+
+| variant | rel-L2 | low-band rel-L2 | predicted HF energy |
+| --- | ---: | ---: | ---: |
+| original Wan checkpoint | 0.34319 | 0.33441 | 3.50e-3 |
+| vanilla_ft: reconstruction + KL | 0.14824 | 0.13880 | 1.21e-3 |
+| hf_noisy0: HF objective, no noisy reconstruction | **0.11095** | **0.10881** | **2.11e-5** |
+
+因此，数据域适配本身解释了大部分 rel-L2 改善；HF 方法的独立收益主要是把 decoder 产生的非物理高频能量压低约两个数量级。`lambda_noisy_reconstruction=0` 是关键消融：加入它后 valid rel-L2 回到 0.14821。
+
+### Latent autoregression
+
+| operator | vanilla_ft one-step | hf_noisy0 one-step | vanilla_ft rollout | hf_noisy0 rollout |
+| --- | ---: | ---: | ---: | ---: |
+| FNO | 0.05253 | **0.04694** | 0.27161 | **0.24868** |
+| Transolver | 0.06321 | **0.05634** | 0.46760 | **0.45967** |
+| CNextU | 0.04481 | **0.04104** | 0.20241 | **0.18914** |
+
+HF embedding 在三个模型的 one-step 和 rollout 都优于同预算 vanilla_ft。加入 temporal difference loss 后，FNO 的 rollout 进一步改善（latent 0.23706，decoded physical field 0.20151），但 Transolver rollout 恶化到 0.52659；所以 temporal 项适合做 FNO 专用配置，不应作为通用默认项。
+
+### Decoded physical-field rollout
+
+在 240 条 test trajectories 上，把递归 latent 预测完整解码回 `(u,v,p)`：
+
+| operator | vanilla_ft | hf_noisy0 | relative change |
+| --- | ---: | ---: | ---: |
+| FNO | 0.26567 | **0.21907** | -17.5% |
+| Transolver | 0.38050 | **0.34167** | -10.2% |
+| CNextU | 0.22731 | **0.18303** | -19.5% |
+
+这验证了 latent rollout 的收益会传到物理场，而不是只改善归一化 embedding 的数值。
+
+### 研究结论
+
+1. 对当前 NS 数据，“高频鲁棒”首先是抑制 encoder/decoder 伪影，而不是尽量保存所有高频；数据本身在归一化频率 0.15 以上的能量已很小。
+2. 普通重建误差不是 NS rollout 的充分目标：它没有区分低频动力学误差和高频伪影，且 noisy reconstruction 会与 clean reconstruction 竞争。
+3. 当前推荐默认是 anti-alias + latent/output spectral scaling + decoder spectral filter，加 `lambda_lowpass=0.5`、`lambda_hf=0.10`、`lambda_sobolev=0.05`、`lambda_latent_consistency=0.05`，并关闭 noisy reconstruction。
+4. 结论依赖下游架构：HF-noisy0 对 FNO、Transolver、CNextU 都有收益；temporal difference 是 FNO 的额外优化方向，但会伤害 Transolver 的长期稳定性。
+
+`experiments/eval_operator_physical.py` 用对应 VAE 将完整 latent rollout 解码后评估物理场误差；`runs/` 下的 checkpoints、latent caches 和 CSV/JSON 是本次实验的原始产物，均未修改 `diff_pde`。
+
 ## 参考依据
 
 - Deconvolution and Checkerboard Artifacts, Distill 2016: transposed convolution 容易产生棋盘伪影，resize-convolution 是常用替代。
-- Making Convolutional Networks Shift-Invariant Again, ICML 2019: 下采样前 anti-aliasing/BlurPool 能改善平移稳定性。
+- [Making Convolutional Networks Shift-Invariant Again, ICML 2019](https://proceedings.mlr.press/v97/zhang19a.html): 下采样前 anti-aliasing/BlurPool 能改善平移稳定性。
 - On the Spectral Bias of Neural Networks, ICML 2019: 常规网络存在低频先学/高频慢学的频率偏置。
-- Sobolev Training for Neural Networks, NeurIPS 2017: 同时监督函数值和导数可编码更强目标信息。
-- Fourier Neural Operator for Parametric PDEs, ICLR 2021: FNO 直接在 Fourier 模态上学习 PDE solution operator。
+- [Sobolev Training for Neural Networks, NeurIPS 2017](https://arxiv.org/abs/1706.04859): 同时监督函数值和导数可编码更强目标信息。
+- [Fourier Neural Operator for Parametric PDEs, ICLR 2021](https://arxiv.org/abs/2010.08895): FNO 直接在 Fourier 模态上学习 PDE solution operator。
 - Physics-Informed Neural Operator, 2021: 将数据 loss 和 PDE loss 结合，适合作为后续突破“重建好但残差高”的路径。
 - Transolver, 2024: physics-attention 通过物理 slice/token 捕捉复杂几何或场相关性。

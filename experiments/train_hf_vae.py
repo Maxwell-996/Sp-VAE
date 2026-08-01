@@ -80,6 +80,11 @@ def main() -> None:
     ap.add_argument("--max-samples-per-shard", type=int, default=None)
     ap.add_argument("--val-batches", type=int, default=0)
     ap.add_argument("--resume", default=None)
+    ap.add_argument(
+        "--init-from",
+        default=None,
+        help="Partially initialize from a compatible Wan VAE checkpoint.",
+    )
 
     # Architecture knobs.
     ap.add_argument("--anti-alias", action="store_true")
@@ -144,6 +149,13 @@ def main() -> None:
     )
 
     model = build_model(args).to(device)
+    if args.init_from:
+        ck = torch.load(args.init_from, map_location="cpu", weights_only=False)
+        missing, unexpected = model.load_state_dict(ck["model"], strict=False)
+        print(
+            f"initialized from {args.init_from}: "
+            f"missing={len(missing)} unexpected={len(unexpected)}"
+        )
     if args.resume:
         ck = torch.load(args.resume, map_location="cpu", weights_only=False)
         model.load_state_dict(ck["model"])

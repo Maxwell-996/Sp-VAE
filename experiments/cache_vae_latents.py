@@ -29,6 +29,7 @@ def encode_video_batch(
     t_clip: int | None = None,
     out_t: int | None = None,
     out_hw: int | None = None,
+    amp: bool = False,
 ):
     # uvp: (N,3,H,W,T) raw physical units.
     mean_t = torch.tensor(mean, device=device).view(1, 3, 1, 1, 1)
@@ -41,7 +42,8 @@ def encode_video_batch(
         x = x.permute(0, 1, 4, 2, 3).contiguous()
         x = (x - mean_t) / (std_t + 1e-8)
         x = resize_video(x, out_hw, out_t)
-        mu, _ = model.encode_dist(x, [0, 1])
+        with torch.amp.autocast("cuda", enabled=amp and device.type == "cuda"):
+            mu, _ = model.encode_dist(x, [0, 1])
         zs.append(mu.float().cpu())
     return torch.cat(zs, dim=0)
 
@@ -58,6 +60,7 @@ def main() -> None:
     ap.add_argument("--t-clip", type=int, default=None)
     ap.add_argument("--out-t", type=int, default=None)
     ap.add_argument("--out-hw", type=int, default=None)
+    ap.add_argument("--amp", action="store_true")
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -92,6 +95,7 @@ def main() -> None:
             t_clip=args.t_clip,
             out_t=args.out_t,
             out_hw=args.out_hw,
+            amp=args.amp,
         )
         out_path = out_dir / sh["path"]
         torch.save(

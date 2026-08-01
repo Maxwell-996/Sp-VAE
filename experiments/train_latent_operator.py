@@ -19,6 +19,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def seed_all(seed: int) -> None:
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
+
 class LatentTrajectoryDataset(Dataset):
     def __init__(
         self,
@@ -62,7 +70,11 @@ class LatentTrajectoryDataset(Dataset):
     def _load(self, si: int):
         if si not in self._cache:
             sh = self.shards[si]
-            self._cache = {si: torch.load(self.split_dir / sh["path"], map_location="cpu", weights_only=False)}
+            self._cache[si] = torch.load(
+                self.split_dir / sh["path"],
+                map_location="cpu",
+                weights_only=False,
+            )
         return self._cache[si]
 
     def __len__(self):
@@ -217,9 +229,11 @@ def main() -> None:
     ap.add_argument("--max-shards", type=int, default=None)
     ap.add_argument("--max-samples-per-shard", type=int, default=None)
     ap.add_argument("--eval-batches", type=int, default=0)
+    ap.add_argument("--seed", type=int, default=3407)
     args = ap.parse_args()
 
     add_act_root(args.act_root)
+    seed_all(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     norm = torch.load(Path(args.latent_root) / "norm_stats_latent.pt", map_location="cpu", weights_only=False)
     train_ds = LatentTrajectoryDataset(
@@ -250,9 +264,30 @@ def main() -> None:
         full_rollout=True,
         use_phys=args.use_phys,
     )
-    train_dl = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=2, drop_last=True)
+    train_dl = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=0, drop_last=True)
     valid_dl = DataLoader(valid_ds, batch_size=args.batch, shuffle=False, num_workers=0)
     roll_dl = DataLoader(roll_ds, batch_size=max(1, args.batch // 2), shuffle=False, num_workers=0)
+    test_ds = LatentTrajectoryDataset(
+        args.latent_root,
+        "test",
+        history=args.history,
+        norm_stats=norm,
+        max_shards=args.max_shards,
+        max_samples_per_shard=args.max_samples_per_shard,
+        use_phys=args.use_phys,
+    )
+    test_roll_ds = LatentTrajectoryDataset(
+        args.latent_root,
+        "test",
+        history=args.history,
+        norm_stats=norm,
+        max_shards=args.max_shards,
+        max_samples_per_shard=args.max_samples_per_shard,
+        full_rollout=True,
+        use_phys=args.use_phys,
+    )
+    test_dl = DataLoader(test_ds, batch_size=args.batch, shuffle=False, num_workers=0)
+    test_roll_dl = DataLoader(test_roll_ds, batch_size=max(1, args.batch // 2), shuffle=False, num_workers=0)
     x0, y0 = train_ds[0]
     dim_in, h, w = x0.shape
     dim_out = y0.shape[0]
@@ -261,9 +296,11 @@ def main() -> None:
     out_csv = Path(args.out_csv).resolve()
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     for name in args.models:
+        seed_all(args.seed)
         model = build_model(name, dim_in, dim_out, h, w, args).to(device)
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
         best = float("inf")
+        best_state = None
         t_start = time.time()
         for ep in range(args.epochs):
             model.train()
@@ -281,13 +318,21 @@ def main() -> None:
                 tsum += float(loss.detach()) * x.size(0)
                 tn += x.size(0)
             val = eval_one_step(model, valid_dl, device, args.eval_batches)
-            best = min(best, val)
+            if val < best:
+                best = val
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             print(f"{name} ep={ep:03d} train_mse={tsum / max(tn, 1):.4g} val_rel={val:.4g}", flush=True)
+        if best_state is not None:
+            model.load_state_dict(best_state)
+        test_one_step = eval_one_step(model, test_dl, device, args.eval_batches)
         rollout = eval_rollout(model, roll_dl, device, args.history, args.use_phys, args.eval_batches)
+        test_rollout = eval_rollout(model, test_roll_dl, device, args.history, args.use_phys, args.eval_batches)
         row = {
             "model": name,
             "best_one_step_rel": best,
+            "test_one_step_rel": test_one_step,
             "rollout_rel": rollout,
+            "test_rollout_rel": test_rollout,
             "epochs": args.epochs,
             "history": args.history,
             "seconds": time.time() - t_start,

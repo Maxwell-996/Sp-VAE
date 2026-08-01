@@ -25,6 +25,7 @@ class HFVAELossConfig:
     lambda_sobolev: float = 0.0
     lambda_latent_consistency: float = 0.0
     lambda_noisy_reconstruction: float = 0.0
+    lambda_temporal: float = 0.0
     lowpass_cutoff: float = 0.35
     highpass_cutoff: float = 0.35
     transition: float = 0.08
@@ -39,6 +40,15 @@ def kl_loss(mu: torch.Tensor, log_var: torch.Tensor) -> torch.Tensor:
 
 def base_reconstruction_loss(recon: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return F.l1_loss(recon, target) + F.mse_loss(recon, target)
+
+
+def temporal_difference_loss(recon: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Match first temporal differences so compression preserves dynamics."""
+    if recon.shape[2] < 2:
+        return recon.new_zeros(())
+    recon_dt = recon[:, :, 1:] - recon[:, :, :-1]
+    target_dt = target[:, :, 1:] - target[:, :, :-1]
+    return F.l1_loss(recon_dt, target_dt) + F.mse_loss(recon_dt, target_dt)
 
 
 def latent_consistency_target(
@@ -103,6 +113,11 @@ def compute_vae_loss(
         )
         loss = loss + cfg.lambda_sobolev * sob
         parts["sobolev"] = float(sob.detach())
+
+    if cfg.lambda_temporal:
+        temporal = temporal_difference_loss(recon, x)
+        loss = loss + cfg.lambda_temporal * temporal
+        parts["temporal"] = float(temporal.detach())
 
     x_aug = None
     mu_aug = None

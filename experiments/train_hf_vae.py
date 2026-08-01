@@ -102,6 +102,7 @@ def main() -> None:
     ap.add_argument("--lambda-sobolev", type=float, default=0.05)
     ap.add_argument("--lambda-latent-consistency", type=float, default=0.05)
     ap.add_argument("--lambda-noisy-reconstruction", type=float, default=0.05)
+    ap.add_argument("--lambda-temporal", type=float, default=0.0)
     ap.add_argument("--lowpass-cutoff", type=float, default=0.35)
     ap.add_argument("--highpass-cutoff", type=float, default=0.35)
     ap.add_argument("--transition", type=float, default=0.08)
@@ -170,6 +171,7 @@ def main() -> None:
         lambda_sobolev=args.lambda_sobolev,
         lambda_latent_consistency=args.lambda_latent_consistency,
         lambda_noisy_reconstruction=args.lambda_noisy_reconstruction,
+        lambda_temporal=args.lambda_temporal,
         lowpass_cutoff=args.lowpass_cutoff,
         highpass_cutoff=args.highpass_cutoff,
         transition=args.transition,

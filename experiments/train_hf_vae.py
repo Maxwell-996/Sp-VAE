@@ -36,6 +36,10 @@ def build_model(args) -> WanVAEHF:
         filter_cutoff=args.filter_cutoff,
         decoder_filter_min_gain=args.decoder_filter_min_gain,
         hfs_cutoff=args.hfs_cutoff,
+        latent_band_moe=args.latent_band_moe,
+        moe_hidden=args.moe_hidden,
+        moe_low_cutoff=args.moe_low_cutoff,
+        moe_high_cutoff=args.moe_high_cutoff,
     )
 
 
@@ -95,6 +99,10 @@ def main() -> None:
     ap.add_argument("--filter-cutoff", type=float, default=None)
     ap.add_argument("--decoder-filter-min-gain", type=float, default=0.02)
     ap.add_argument("--hfs-cutoff", type=float, default=0.35)
+    ap.add_argument("--latent-band-moe", action="store_true")
+    ap.add_argument("--moe-hidden", type=int, default=32)
+    ap.add_argument("--moe-low-cutoff", type=float, default=0.20)
+    ap.add_argument("--moe-high-cutoff", type=float, default=0.50)
 
     # Objective knobs.
     ap.add_argument("--beta-kl", type=float, default=1e-4)

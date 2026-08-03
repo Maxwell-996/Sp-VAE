@@ -37,6 +37,10 @@ def build_from_ckpt(path: str, device: torch.device) -> tuple[WanVAEHF, dict]:
         filter_cutoff=a.get("filter_cutoff", None),
         decoder_filter_min_gain=a.get("decoder_filter_min_gain", 0.02),
         hfs_cutoff=a.get("hfs_cutoff", 0.35),
+        latent_band_moe=a.get("latent_band_moe", False),
+        moe_hidden=a.get("moe_hidden", 32),
+        moe_low_cutoff=a.get("moe_low_cutoff", 0.20),
+        moe_high_cutoff=a.get("moe_high_cutoff", 0.50),
     ).to(device)
     model.load_state_dict(ck["model"])
     model.eval()

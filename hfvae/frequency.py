@@ -277,6 +277,72 @@ class HighFrequencyScaling2d(nn.Module):
         return _restore_shape(y, orig)
 
 
+class FrequencyBandMoE2d(nn.Module):
+    """Zero-initialized local experts routed by coarse and physical features."""
+
+    def __init__(
+        self,
+        channels: int,
+        *,
+        hidden: int = 32,
+        low_cutoff: float = 0.20,
+        high_cutoff: float = 0.50,
+    ):
+        super().__init__()
+        if not 0.0 < low_cutoff < high_cutoff:
+            raise ValueError("expected 0 < low_cutoff < high_cutoff")
+        self.channels = int(channels)
+        self.low_cutoff = float(low_cutoff)
+        self.high_cutoff = float(high_cutoff)
+        self.router = nn.Sequential(
+            nn.Conv2d(3, hidden, 1),
+            nn.GELU(),
+            nn.Conv2d(hidden, 3, 1),
+        )
+        self.experts = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Conv2d(channels, channels, 3, padding=1, groups=channels),
+                    nn.GELU(),
+                    nn.Conv2d(channels, channels, 1),
+                )
+                for _ in range(3)
+            ]
+        )
+        self.out_proj = nn.Conv2d(channels, channels, 1)
+        nn.init.zeros_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x5, orig = _as_5d(x)
+        if x5.shape[1] != self.channels:
+            raise ValueError(f"expected {self.channels} channels, got {x5.shape[1]}")
+        low = lowpass_filter_2d(x5, self.low_cutoff)
+        high = highpass_filter_2d(x5, self.high_cutoff)
+        mid = x5 - low - high
+
+        u, v = x5[:, 0], x5[:, 1]
+        du_dy = 0.5 * (torch.roll(u, -1, dims=-2) - torch.roll(u, 1, dims=-2))
+        dv_dx = 0.5 * (torch.roll(v, -1, dims=-1) - torch.roll(v, 1, dims=-1))
+        omega = (dv_dx - du_dy).abs().unsqueeze(1)
+        router_features = torch.cat(
+            [low.mean(dim=1, keepdim=True), high.abs().mean(dim=1, keepdim=True), omega],
+            dim=1,
+        )
+        b, _c, t, h, w = x5.shape
+        logits = self.router(router_features.permute(0, 2, 1, 3, 4).reshape(b * t, 3, h, w))
+        weights = logits.softmax(dim=1)
+
+        bands = (low, mid, high)
+        mixed = x5.new_zeros((b * t, self.channels, h, w))
+        for i, band in enumerate(bands):
+            band2d = band.permute(0, 2, 1, 3, 4).reshape(b * t, self.channels, h, w)
+            mixed = mixed + weights[:, i : i + 1] * self.experts[i](band2d)
+        mixed = self.out_proj(mixed)
+        mixed = mixed.reshape(b, t, self.channels, h, w).permute(0, 2, 1, 3, 4)
+        return _restore_shape(x5 + mixed, orig)
+
+
 class AdaptiveSpectralFilter2d(nn.Module):
     """Learnable radial spectral output filter with dynamic input resolution."""
 

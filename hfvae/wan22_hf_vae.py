@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import torch
 
-from .frequency import AdaptiveSpectralFilter2d, BlurPool2d, HighFrequencyScaling2d
+from .frequency import (
+    AdaptiveSpectralFilter2d,
+    BlurPool2d,
+    FrequencyBandMoE2d,
+    HighFrequencyScaling2d,
+)
 from .wan22_imports import CausalConv3d, WanVAE_, patchify, unpatchify
 
 
@@ -30,6 +35,10 @@ class WanVAEHF(WanVAE_):
         filter_cutoff: float | None = None,
         decoder_filter_min_gain: float = 0.02,
         hfs_cutoff: float = 0.35,
+        latent_band_moe: bool = False,
+        moe_hidden: int = 32,
+        moe_low_cutoff: float = 0.20,
+        moe_high_cutoff: float = 0.50,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -54,6 +63,16 @@ class WanVAEHF(WanVAE_):
         self.latent_hfs = (
             HighFrequencyScaling2d(self.z_dim, cutoff=hfs_cutoff, init_high=1.0)
             if latent_hfs
+            else None
+        )
+        self.latent_band_moe = (
+            FrequencyBandMoE2d(
+                self.z_dim,
+                hidden=moe_hidden,
+                low_cutoff=moe_low_cutoff,
+                high_cutoff=moe_high_cutoff,
+            )
+            if latent_band_moe
             else None
         )
         self.output_hfs = (
@@ -103,6 +122,8 @@ class WanVAEHF(WanVAE_):
             mu = (mu - scale[0]) * scale[1]
         if self.latent_hfs is not None:
             mu = self.latent_hfs(mu)
+        if self.latent_band_moe is not None:
+            mu = self.latent_band_moe(mu)
         return mu, log_var
 
     def encode(self, x: torch.Tensor, scale):

@@ -28,6 +28,7 @@ class HFVAELossConfig:
     lambda_latent_consistency: float = 0.0
     lambda_noisy_reconstruction: float = 0.0
     lambda_temporal: float = 0.0
+    lambda_vorticity: float = 0.0
     wavelet_levels: int = 2
     lowpass_cutoff: float = 0.35
     highpass_cutoff: float = 0.35
@@ -52,6 +53,27 @@ def temporal_difference_loss(recon: torch.Tensor, target: torch.Tensor) -> torch
     recon_dt = recon[:, :, 1:] - recon[:, :, :-1]
     target_dt = target[:, :, 1:] - target[:, :, :-1]
     return F.l1_loss(recon_dt, target_dt) + F.mse_loss(recon_dt, target_dt)
+
+
+def vorticity_reconstruction_loss(
+    recon: torch.Tensor,
+    target: torch.Tensor,
+) -> torch.Tensor:
+    """Match periodic-grid vorticity for the two velocity channels."""
+    if recon.shape[1] < 2 or target.shape[1] < 2:
+        raise ValueError("vorticity loss requires u and v channels")
+    recon = recon.float()
+    target = target.float()
+
+    def curl_z(field: torch.Tensor) -> torch.Tensor:
+        u, v = field[:, 0], field[:, 1]
+        du_dy = 0.5 * (torch.roll(u, -1, dims=-2) - torch.roll(u, 1, dims=-2))
+        dv_dx = 0.5 * (torch.roll(v, -1, dims=-1) - torch.roll(v, 1, dims=-1))
+        return dv_dx - du_dy
+
+    return F.l1_loss(curl_z(recon), curl_z(target)) + F.mse_loss(
+        curl_z(recon), curl_z(target)
+    )
 
 
 def latent_consistency_target(
@@ -130,6 +152,11 @@ def compute_vae_loss(
         temporal = temporal_difference_loss(recon, x)
         loss = loss + cfg.lambda_temporal * temporal
         parts["temporal"] = float(temporal.detach())
+
+    if cfg.lambda_vorticity:
+        vorticity = vorticity_reconstruction_loss(recon, x)
+        loss = loss + cfg.lambda_vorticity * vorticity
+        parts["vorticity"] = float(vorticity.detach())
 
     x_aug = None
     mu_aug = None

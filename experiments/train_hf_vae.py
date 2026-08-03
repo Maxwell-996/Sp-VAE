@@ -106,6 +106,7 @@ def main() -> None:
     ap.add_argument("--lambda-latent-consistency", type=float, default=0.05)
     ap.add_argument("--lambda-noisy-reconstruction", type=float, default=0.0)
     ap.add_argument("--lambda-temporal", type=float, default=0.0)
+    ap.add_argument("--lambda-vorticity", type=float, default=0.0)
     ap.add_argument("--wavelet-levels", type=int, default=2)
     ap.add_argument("--lowpass-cutoff", type=float, default=0.35)
     ap.add_argument("--highpass-cutoff", type=float, default=0.35)
@@ -177,6 +178,7 @@ def main() -> None:
         lambda_latent_consistency=args.lambda_latent_consistency,
         lambda_noisy_reconstruction=args.lambda_noisy_reconstruction,
         lambda_temporal=args.lambda_temporal,
+        lambda_vorticity=args.lambda_vorticity,
         wavelet_levels=args.wavelet_levels,
         lowpass_cutoff=args.lowpass_cutoff,
         highpass_cutoff=args.highpass_cutoff,

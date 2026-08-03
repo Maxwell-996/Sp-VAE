@@ -134,6 +134,10 @@ class LearnableTokenMoE(nn.Module):
         nn.init.zeros_(self.output.bias)
         self.log_temperature = nn.Parameter(torch.zeros(()))
         self._balance_loss = torch.zeros(())
+        self.register_buffer(
+            "last_importance", torch.full((num_experts,), 1.0 / num_experts)
+        )
+        self.register_buffer("last_load", torch.full((num_experts,), 1.0 / num_experts))
 
     def _aux(
         self,
@@ -168,6 +172,13 @@ class LearnableTokenMoE(nn.Module):
         """Switch-style importance/load penalty from the latest forward pass."""
         return self._balance_loss
 
+    def routing_stats(self) -> dict[str, list[float]]:
+        return {
+            "importance": self.last_importance.detach().cpu().tolist(),
+            "load": self.last_load.detach().cpu().tolist(),
+            "temperature": [float(self.log_temperature.exp().detach().cpu())],
+        }
+
     def forward(
         self,
         x: torch.Tensor,
@@ -190,10 +201,14 @@ class LearnableTokenMoE(nn.Module):
         routed = torch.cat((features, pooled.expand(-1, n, -1)), dim=-1)
         temperature = self.log_temperature.exp().clamp(0.25, 4.0)
         logits = self.router(routed) / temperature
+        selection = torch.zeros_like(logits)
         if self.top_k < self.num_experts:
             top_values, top_indices = logits.topk(self.top_k, dim=-1)
             sparse = torch.full_like(logits, float("-inf"))
             logits = sparse.scatter(-1, top_indices, top_values)
+            selection.scatter_(-1, top_indices, 1.0)
+        else:
+            selection.scatter_(-1, logits.argmax(dim=-1, keepdim=True), 1.0)
         gates = torch.softmax(logits, dim=-1) * valid
 
         expert_values = torch.stack([expert(features) for expert in self.experts], dim=2)
@@ -202,13 +217,9 @@ class LearnableTokenMoE(nn.Module):
         delta = self.output(mixed) * valid
 
         importance = gates.sum(dim=(0, 1)) / valid.sum().clamp_min(1.0)
-        selected = torch.zeros_like(gates)
-        selected.scatter_(
-            -1,
-            logits.argmax(dim=-1, keepdim=True),
-            1.0,
-        )
-        selected = selected * valid
+        selected = selection * valid
         load = selected.sum(dim=(0, 1)) / valid.sum().clamp_min(1.0)
         self._balance_loss = self.num_experts * (importance * load).sum()
+        self.last_importance.copy_(importance.detach())
+        self.last_load.copy_(load.detach())
         return _restore(tokens + delta, meta)

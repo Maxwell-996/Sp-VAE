@@ -54,7 +54,20 @@ def build_from_ckpt(path: str, device: torch.device) -> tuple[WanVAEHF, dict]:
         learnable_moe_global=a.get("learnable_moe_global", False),
         output_band_moe=a.get("output_band_moe", False),
     ).to(device)
-    model.load_state_dict(ck["model"])
+    missing, unexpected = model.load_state_dict(ck["model"], strict=False)
+    allowed_missing = {
+        "latent_learnable_moe.last_importance",
+        "latent_learnable_moe.last_load",
+        "output_learnable_moe.last_importance",
+        "output_learnable_moe.last_load",
+    }
+    unexpected = set(unexpected)
+    missing = set(missing)
+    if unexpected or missing - allowed_missing:
+        raise RuntimeError(
+            "checkpoint/model mismatch: "
+            f"missing={sorted(missing)} unexpected={sorted(unexpected)}"
+        )
     model.eval()
     return model, ck
 

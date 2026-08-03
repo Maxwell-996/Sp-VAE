@@ -316,8 +316,8 @@ leakage。非规则点集没有固定的正交 DFT 基，直接 reshape 后做 F
 `W_o` 零初始化、soft/top-k gate 和 load-balance 正则很重要：新 adapter 的初始行为
 应等于 Wan VAE，避免改变原有 latent 坐标系；训练后再逐步学习哪些区域和尺度需要
 额外容量。仓库中的 `FrequencyBandMoE2d` 已覆盖规则网格的 FFT/local + cross-band
-版本，未跟踪的 `hfvae/learnable_moe.py` 则提供了支持坐标和 mask 的 token MoE 原型，
-后者适合作为不规则采样分支，但目前尚未计入 VAE 主实验结果。
+版本，`hfvae/learnable_moe.py` 则提供了支持坐标和 mask 的 token MoE，后者适合作为
+不规则采样分支，但目前尚未计入 VAE 主实验结果。
 
 ### 当前实验矩阵
 

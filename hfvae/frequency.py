@@ -287,6 +287,7 @@ class FrequencyBandMoE2d(nn.Module):
         hidden: int = 32,
         low_cutoff: float = 0.20,
         high_cutoff: float = 0.50,
+        global_low: bool = False,
     ):
         super().__init__()
         if not 0.0 < low_cutoff < high_cutoff:
@@ -294,6 +295,7 @@ class FrequencyBandMoE2d(nn.Module):
         self.channels = int(channels)
         self.low_cutoff = float(low_cutoff)
         self.high_cutoff = float(high_cutoff)
+        self.global_low = bool(global_low)
         self.router = nn.Sequential(
             nn.Conv2d(3, hidden, 1),
             nn.GELU(),
@@ -308,6 +310,11 @@ class FrequencyBandMoE2d(nn.Module):
                 )
                 for _ in range(3)
             ]
+        )
+        self.low_spectral = (
+            AdaptiveSpectralFilter2d(cutoff=low_cutoff, min_gain=0.5)
+            if self.global_low
+            else None
         )
         self.out_proj = nn.Conv2d(channels, channels, 1)
         nn.init.zeros_(self.out_proj.weight)
@@ -337,7 +344,10 @@ class FrequencyBandMoE2d(nn.Module):
         mixed = x5.new_zeros((b * t, self.channels, h, w))
         for i, band in enumerate(bands):
             band2d = band.permute(0, 2, 1, 3, 4).reshape(b * t, self.channels, h, w)
-            mixed = mixed + weights[:, i : i + 1] * self.experts[i](band2d)
+            expert_out = self.experts[i](band2d)
+            if i == 0 and self.low_spectral is not None:
+                expert_out = self.low_spectral(expert_out)
+            mixed = mixed + weights[:, i : i + 1] * expert_out
         mixed = self.out_proj(mixed)
         mixed = mixed.reshape(b, t, self.channels, h, w).permute(0, 2, 1, 3, 4)
         return _restore_shape(x5 + mixed, orig)

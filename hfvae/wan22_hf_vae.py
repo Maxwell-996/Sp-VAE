@@ -39,6 +39,8 @@ class WanVAEHF(WanVAE_):
         moe_hidden: int = 32,
         moe_low_cutoff: float = 0.20,
         moe_high_cutoff: float = 0.50,
+        moe_global_low: bool = False,
+        output_band_moe: bool = False,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -71,8 +73,20 @@ class WanVAEHF(WanVAE_):
                 hidden=moe_hidden,
                 low_cutoff=moe_low_cutoff,
                 high_cutoff=moe_high_cutoff,
+                global_low=moe_global_low,
             )
             if latent_band_moe
+            else None
+        )
+        self.output_band_moe = (
+            FrequencyBandMoE2d(
+                self.input_channels,
+                hidden=moe_hidden,
+                low_cutoff=moe_low_cutoff,
+                high_cutoff=moe_high_cutoff,
+                global_low=moe_global_low,
+            )
+            if output_band_moe
             else None
         )
         self.output_hfs = (
@@ -151,6 +165,8 @@ class WanVAEHF(WanVAE_):
             )
             out = y if out is None else torch.cat([out, y], dim=2)
         out = unpatchify(out, patch_size=self.ps)
+        if self.output_band_moe is not None:
+            out = self.output_band_moe(out)
         if self.output_hfs is not None:
             out = self.output_hfs(out)
         if self.decoder_spectral_filter is not None:

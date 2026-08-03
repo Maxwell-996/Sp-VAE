@@ -157,6 +157,54 @@ def spectral_energy_loss(
     return F.mse_loss(pe, te)
 
 
+def haar_detail_reconstruction_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    levels: int = 2,
+) -> torch.Tensor:
+    """Match localized Haar detail subbands over one or more scales."""
+    pred5, _ = _as_5d(pred)
+    target5, _ = _as_5d(target)
+    if pred5.shape != target5.shape:
+        raise ValueError("pred and target must have the same shape")
+    if levels < 1:
+        raise ValueError("levels must be positive")
+    if pred5.shape[-2] < 2**levels or pred5.shape[-1] < 2**levels:
+        raise ValueError("H and W are too small for the requested Haar levels")
+
+    p_ll = pred5.float()
+    t_ll = target5.float()
+    total = pred5.new_zeros((), dtype=torch.float32)
+    for _ in range(levels):
+        if p_ll.shape[-2] % 2 or p_ll.shape[-1] % 2:
+            raise ValueError("H and W must remain even at every Haar level")
+        p00 = p_ll[..., 0::2, 0::2]
+        p01 = p_ll[..., 0::2, 1::2]
+        p10 = p_ll[..., 1::2, 0::2]
+        p11 = p_ll[..., 1::2, 1::2]
+        t00 = t_ll[..., 0::2, 0::2]
+        t01 = t_ll[..., 0::2, 1::2]
+        t10 = t_ll[..., 1::2, 0::2]
+        t11 = t_ll[..., 1::2, 1::2]
+
+        p_ll = (p00 + p01 + p10 + p11) * 0.5
+        t_ll = (t00 + t01 + t10 + t11) * 0.5
+        p_details = (
+            (p00 - p01 + p10 - p11) * 0.5,
+            (p00 + p01 - p10 - p11) * 0.5,
+            (p00 - p01 - p10 + p11) * 0.5,
+        )
+        t_details = (
+            (t00 - t01 + t10 - t11) * 0.5,
+            (t00 + t01 - t10 - t11) * 0.5,
+            (t00 - t01 - t10 + t11) * 0.5,
+        )
+        for p_detail, t_detail in zip(p_details, t_details):
+            total = total + F.l1_loss(p_detail, t_detail) + F.mse_loss(p_detail, t_detail)
+    return total / float(levels * 3)
+
+
 def high_frequency_leakage_loss(
     pred: torch.Tensor,
     target: torch.Tensor | None = None,

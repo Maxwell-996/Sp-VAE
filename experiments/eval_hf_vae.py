@@ -35,6 +35,7 @@ def build_from_ckpt(path: str, device: torch.device) -> tuple[WanVAEHF, dict]:
         output_hfs=a.get("output_hfs", False),
         decoder_spectral_filter=a.get("decoder_spectral_filter", False),
         filter_cutoff=a.get("filter_cutoff", None),
+        decoder_filter_min_gain=a.get("decoder_filter_min_gain", 0.02),
         hfs_cutoff=a.get("hfs_cutoff", 0.35),
     ).to(device)
     model.load_state_dict(ck["model"])

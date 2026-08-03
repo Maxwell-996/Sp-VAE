@@ -28,6 +28,7 @@ class WanVAEHF(WanVAE_):
         output_hfs: bool = False,
         decoder_spectral_filter: bool = False,
         filter_cutoff: float | None = None,
+        decoder_filter_min_gain: float = 0.02,
         hfs_cutoff: float = 0.35,
         **kwargs,
     ):
@@ -61,7 +62,10 @@ class WanVAEHF(WanVAE_):
             else None
         )
         self.decoder_spectral_filter = (
-            AdaptiveSpectralFilter2d(cutoff=filter_cutoff, min_gain=0.02)
+            AdaptiveSpectralFilter2d(
+                cutoff=filter_cutoff,
+                min_gain=decoder_filter_min_gain,
+            )
             if decoder_spectral_filter
             else None
         )

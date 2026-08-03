@@ -94,10 +94,14 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
                 "0.10",
                 "--lambda-latent-consistency",
                 "0.05",
-                "--lambda-noisy-reconstruction",
-                "0.05",
-                "--lowpass-cutoff",
-                "0.10",
+            "--lambda-noisy-reconstruction",
+            "0.05",
+            "--lambda-wavelet",
+            str(args.lambda_wavelet),
+            "--wavelet-levels",
+            str(args.wavelet_levels),
+            "--lowpass-cutoff",
+            "0.10",
                 "--highpass-cutoff",
                 "0.15",
                 "--consistency-noise",
@@ -226,6 +230,8 @@ def main() -> None:
     parser.add_argument("--noise-cutoff", type=float, default=0.20)
     parser.add_argument("--noise-amplitude", type=float, default=0.10)
     parser.add_argument("--transition", type=float, default=0.04)
+    parser.add_argument("--lambda-wavelet", type=float, default=0.0)
+    parser.add_argument("--wavelet-levels", type=int, default=2)
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory(prefix="hfvae-score-") as temporary:

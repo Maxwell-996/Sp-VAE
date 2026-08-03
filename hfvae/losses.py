@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from .frequency import (
     frequency_weighted_mse,
     high_frequency_leakage_loss,
+    haar_detail_reconstruction_loss,
     highpass_filter_2d,
     lowpass_filter_2d,
     spectral_energy_loss,
@@ -22,10 +23,12 @@ class HFVAELossConfig:
     lambda_lowpass: float = 0.0
     lambda_hf: float = 0.0
     lambda_spectral: float = 0.0
+    lambda_wavelet: float = 0.0
     lambda_sobolev: float = 0.0
     lambda_latent_consistency: float = 0.0
     lambda_noisy_reconstruction: float = 0.0
     lambda_temporal: float = 0.0
+    wavelet_levels: int = 2
     lowpass_cutoff: float = 0.35
     highpass_cutoff: float = 0.35
     transition: float = 0.08
@@ -102,6 +105,15 @@ def compute_vae_loss(
         spec = spectral_energy_loss(recon, x)
         loss = loss + cfg.lambda_spectral * spec
         parts["spectral"] = float(spec.detach())
+
+    if cfg.lambda_wavelet:
+        wavelet = haar_detail_reconstruction_loss(
+            recon,
+            x,
+            levels=cfg.wavelet_levels,
+        )
+        loss = loss + cfg.lambda_wavelet * wavelet
+        parts["wavelet"] = float(wavelet.detach())
 
     if cfg.lambda_sobolev:
         sob = frequency_weighted_mse(

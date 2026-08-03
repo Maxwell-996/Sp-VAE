@@ -34,6 +34,7 @@ def build_model(args) -> WanVAEHF:
         output_hfs=args.output_hfs,
         decoder_spectral_filter=args.decoder_spectral_filter,
         filter_cutoff=args.filter_cutoff,
+        decoder_filter_min_gain=args.decoder_filter_min_gain,
         hfs_cutoff=args.hfs_cutoff,
     )
 
@@ -92,6 +93,7 @@ def main() -> None:
     ap.add_argument("--output-hfs", action="store_true")
     ap.add_argument("--decoder-spectral-filter", action="store_true")
     ap.add_argument("--filter-cutoff", type=float, default=None)
+    ap.add_argument("--decoder-filter-min-gain", type=float, default=0.02)
     ap.add_argument("--hfs-cutoff", type=float, default=0.35)
 
     # Objective knobs.
@@ -99,10 +101,12 @@ def main() -> None:
     ap.add_argument("--lambda-lowpass", type=float, default=0.5)
     ap.add_argument("--lambda-hf", type=float, default=0.05)
     ap.add_argument("--lambda-spectral", type=float, default=0.0)
+    ap.add_argument("--lambda-wavelet", type=float, default=0.0)
     ap.add_argument("--lambda-sobolev", type=float, default=0.05)
     ap.add_argument("--lambda-latent-consistency", type=float, default=0.05)
     ap.add_argument("--lambda-noisy-reconstruction", type=float, default=0.0)
     ap.add_argument("--lambda-temporal", type=float, default=0.0)
+    ap.add_argument("--wavelet-levels", type=int, default=2)
     ap.add_argument("--lowpass-cutoff", type=float, default=0.35)
     ap.add_argument("--highpass-cutoff", type=float, default=0.35)
     ap.add_argument("--transition", type=float, default=0.08)
@@ -168,10 +172,12 @@ def main() -> None:
         lambda_lowpass=args.lambda_lowpass,
         lambda_hf=args.lambda_hf,
         lambda_spectral=args.lambda_spectral,
+        lambda_wavelet=args.lambda_wavelet,
         lambda_sobolev=args.lambda_sobolev,
         lambda_latent_consistency=args.lambda_latent_consistency,
         lambda_noisy_reconstruction=args.lambda_noisy_reconstruction,
         lambda_temporal=args.lambda_temporal,
+        wavelet_levels=args.wavelet_levels,
         lowpass_cutoff=args.lowpass_cutoff,
         highpass_cutoff=args.highpass_cutoff,
         transition=args.transition,

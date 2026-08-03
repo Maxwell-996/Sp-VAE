@@ -84,8 +84,6 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
                 "--latent-hfs",
                 "--output-hfs",
                 "--decoder-spectral-filter",
-                "--decoder-filter-min-gain",
-                str(args.decoder_filter_min_gain),
                 "--filter-cutoff",
                 "0.15",
                 "--hfs-cutoff",
@@ -232,7 +230,6 @@ def main() -> None:
     parser.add_argument("--noise-cutoff", type=float, default=0.20)
     parser.add_argument("--noise-amplitude", type=float, default=0.10)
     parser.add_argument("--transition", type=float, default=0.04)
-    parser.add_argument("--decoder-filter-min-gain", type=float, default=0.05)
     parser.add_argument("--lambda-wavelet", type=float, default=0.0)
     parser.add_argument("--wavelet-levels", type=int, default=2)
     args = parser.parse_args()

@@ -45,6 +45,11 @@ def build_model(args) -> WanVAEHF:
         moe_cross_band=args.moe_cross_band,
         moe_shared_expert=args.moe_shared_expert,
         moe_router_smooth=args.moe_router_smooth,
+        latent_learnable_moe=args.latent_learnable_moe,
+        output_learnable_moe=args.output_learnable_moe,
+        learnable_moe_hidden=args.learnable_moe_hidden,
+        learnable_moe_experts=args.learnable_moe_experts,
+        learnable_moe_top_k=args.learnable_moe_top_k,
         output_band_moe=args.output_band_moe,
     )
 
@@ -114,6 +119,11 @@ def main() -> None:
     ap.add_argument("--moe-cross-band", action="store_true")
     ap.add_argument("--moe-shared-expert", action="store_true")
     ap.add_argument("--moe-router-smooth", action="store_true")
+    ap.add_argument("--latent-learnable-moe", action="store_true")
+    ap.add_argument("--output-learnable-moe", action="store_true")
+    ap.add_argument("--learnable-moe-hidden", type=int, default=64)
+    ap.add_argument("--learnable-moe-experts", type=int, default=4)
+    ap.add_argument("--learnable-moe-top-k", type=int, default=2)
     ap.add_argument("--output-band-moe", action="store_true")
 
     # Objective knobs.
@@ -127,6 +137,7 @@ def main() -> None:
     ap.add_argument("--lambda-noisy-reconstruction", type=float, default=0.0)
     ap.add_argument("--lambda-temporal", type=float, default=0.0)
     ap.add_argument("--lambda-vorticity", type=float, default=0.0)
+    ap.add_argument("--lambda-moe-balance", type=float, default=0.0)
     ap.add_argument("--wavelet-levels", type=int, default=2)
     ap.add_argument("--lowpass-cutoff", type=float, default=0.35)
     ap.add_argument("--highpass-cutoff", type=float, default=0.35)
@@ -199,6 +210,7 @@ def main() -> None:
         lambda_noisy_reconstruction=args.lambda_noisy_reconstruction,
         lambda_temporal=args.lambda_temporal,
         lambda_vorticity=args.lambda_vorticity,
+        lambda_moe_balance=args.lambda_moe_balance,
         wavelet_levels=args.wavelet_levels,
         lowpass_cutoff=args.lowpass_cutoff,
         highpass_cutoff=args.highpass_cutoff,

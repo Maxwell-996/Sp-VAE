@@ -10,6 +10,7 @@ from .frequency import (
     FrequencyBandMoE2d,
     HighFrequencyScaling2d,
 )
+from .learnable_moe import LearnableTokenMoE
 from .wan22_imports import CausalConv3d, WanVAE_, patchify, unpatchify
 
 
@@ -44,6 +45,11 @@ class WanVAEHF(WanVAE_):
         moe_cross_band: bool = False,
         moe_shared_expert: bool = False,
         moe_router_smooth: bool = False,
+        latent_learnable_moe: bool = False,
+        output_learnable_moe: bool = False,
+        learnable_moe_hidden: int = 64,
+        learnable_moe_experts: int = 4,
+        learnable_moe_top_k: int = 2,
         output_band_moe: bool = False,
         **kwargs,
     ):
@@ -86,6 +92,16 @@ class WanVAEHF(WanVAE_):
             if latent_band_moe
             else None
         )
+        self.latent_learnable_moe = (
+            LearnableTokenMoE(
+                self.z_dim,
+                hidden=learnable_moe_hidden,
+                num_experts=learnable_moe_experts,
+                top_k=learnable_moe_top_k,
+            )
+            if latent_learnable_moe
+            else None
+        )
         self.output_band_moe = (
             FrequencyBandMoE2d(
                 self.input_channels,
@@ -99,6 +115,16 @@ class WanVAEHF(WanVAE_):
                 router_smooth=moe_router_smooth,
             )
             if output_band_moe
+            else None
+        )
+        self.output_learnable_moe = (
+            LearnableTokenMoE(
+                self.input_channels,
+                hidden=learnable_moe_hidden,
+                num_experts=learnable_moe_experts,
+                top_k=learnable_moe_top_k,
+            )
+            if output_learnable_moe
             else None
         )
         self.output_hfs = (
@@ -150,7 +176,16 @@ class WanVAEHF(WanVAE_):
             mu = self.latent_hfs(mu)
         if self.latent_band_moe is not None:
             mu = self.latent_band_moe(mu)
+        if self.latent_learnable_moe is not None:
+            mu = self.latent_learnable_moe(mu)
         return mu, log_var
+
+    def moe_balance_loss(self) -> torch.Tensor:
+        modules = (self.latent_learnable_moe, self.output_learnable_moe)
+        losses = [module.balance_loss() for module in modules if module is not None]
+        if not losses:
+            return next(self.parameters()).new_zeros(())
+        return sum(losses)
 
     def encode(self, x: torch.Tensor, scale):
         mu, _ = self.encode_dist(x, scale)
@@ -177,6 +212,8 @@ class WanVAEHF(WanVAE_):
             )
             out = y if out is None else torch.cat([out, y], dim=2)
         out = unpatchify(out, patch_size=self.ps)
+        if self.output_learnable_moe is not None:
+            out = self.output_learnable_moe(out)
         if self.output_band_moe is not None:
             out = self.output_band_moe(out)
         if self.output_hfs is not None:

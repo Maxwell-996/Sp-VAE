@@ -29,6 +29,7 @@ class HFVAELossConfig:
     lambda_noisy_reconstruction: float = 0.0
     lambda_temporal: float = 0.0
     lambda_vorticity: float = 0.0
+    lambda_moe_balance: float = 0.0
     wavelet_levels: int = 2
     lowpass_cutoff: float = 0.35
     highpass_cutoff: float = 0.35
@@ -179,6 +180,11 @@ def compute_vae_loss(
         cons = F.mse_loss(mu_aug.float(), mu.detach().float())
         loss = loss + cfg.lambda_latent_consistency * cons
         parts["latent_consistency"] = float(cons.detach())
+
+    if cfg.lambda_moe_balance:
+        balance = model.moe_balance_loss()
+        loss = loss + cfg.lambda_moe_balance * balance
+        parts["moe_balance"] = float(balance.detach())
 
     parts["loss"] = float(loss.detach())
     return loss, parts

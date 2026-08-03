@@ -51,6 +51,7 @@ def build_from_ckpt(path: str, device: torch.device) -> tuple[WanVAEHF, dict]:
         learnable_moe_hidden=a.get("learnable_moe_hidden", 64),
         learnable_moe_experts=a.get("learnable_moe_experts", 4),
         learnable_moe_top_k=a.get("learnable_moe_top_k", 2),
+        learnable_moe_global=a.get("learnable_moe_global", False),
         output_band_moe=a.get("output_band_moe", False),
     ).to(device)
     model.load_state_dict(ck["model"])

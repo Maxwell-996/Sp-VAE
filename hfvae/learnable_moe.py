@@ -102,6 +102,7 @@ class LearnableTokenMoE(nn.Module):
         num_experts: int = 4,
         top_k: int = 2,
         expansion: int = 2,
+        global_context: bool = False,
     ):
         super().__init__()
         if channels < 1 or hidden < 1:
@@ -114,6 +115,7 @@ class LearnableTokenMoE(nn.Module):
         self.hidden = int(hidden)
         self.num_experts = int(num_experts)
         self.top_k = int(top_k)
+        self.global_context_enabled = bool(global_context)
         self.input = nn.Sequential(
             nn.LayerNorm(channels + 3),
             nn.Linear(channels + 3, hidden),
@@ -129,6 +131,7 @@ class LearnableTokenMoE(nn.Module):
             [_Expert(hidden, expansion=expansion) for _ in range(num_experts)]
         )
         self.shared = _Expert(hidden, expansion=expansion)
+        self.global_expert = _Expert(hidden, expansion=expansion) if global_context else None
         self.output = nn.Linear(hidden, channels)
         nn.init.zeros_(self.output.weight)
         nn.init.zeros_(self.output.bias)
@@ -201,24 +204,33 @@ class LearnableTokenMoE(nn.Module):
         routed = torch.cat((features, pooled.expand(-1, n, -1)), dim=-1)
         temperature = self.log_temperature.exp().clamp(0.25, 4.0)
         logits = self.router(routed) / temperature
+        # Keep a dense probability path for the auxiliary loss. In particular,
+        # top-1 routing otherwise turns importance into a non-differentiable
+        # one-hot tensor and makes load balancing ineffective.
+        dense_gates = torch.softmax(logits, dim=-1) * valid
         selection = torch.zeros_like(logits)
         if self.top_k < self.num_experts:
             top_values, top_indices = logits.topk(self.top_k, dim=-1)
             sparse = torch.full_like(logits, float("-inf"))
-            logits = sparse.scatter(-1, top_indices, top_values)
+            routed_logits = sparse.scatter(-1, top_indices, top_values)
             selection.scatter_(-1, top_indices, 1.0)
+            gates = torch.softmax(routed_logits, dim=-1) * valid
         else:
-            selection.scatter_(-1, logits.argmax(dim=-1, keepdim=True), 1.0)
-        gates = torch.softmax(logits, dim=-1) * valid
+            selection.fill_(1.0)
+            gates = dense_gates
 
         expert_values = torch.stack([expert(features) for expert in self.experts], dim=2)
         routed_value = torch.einsum("bne,bneh->bnh", gates, expert_values)
         mixed = self.shared(features) + routed_value
+        if self.global_expert is not None:
+            mixed = mixed + self.global_expert(pooled).expand(-1, n, -1)
         delta = self.output(mixed) * valid
 
-        importance = gates.sum(dim=(0, 1)) / valid.sum().clamp_min(1.0)
+        importance = dense_gates.sum(dim=(0, 1)) / valid.sum().clamp_min(1.0)
         selected = selection * valid
-        load = selected.sum(dim=(0, 1)) / valid.sum().clamp_min(1.0)
+        load = selected.sum(dim=(0, 1)) / (
+            valid.sum().clamp_min(1.0) * self.top_k
+        )
         self._balance_loss = self.num_experts * (importance * load).sum()
         self.last_importance.copy_(importance.detach())
         self.last_load.copy_(load.detach())

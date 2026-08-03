@@ -262,7 +262,8 @@ y_i=x_i+W_o\left(F_{shared}(h_i)+
 \]
 
 其中 `W_o` 零初始化，保证新模块接入时仍是 identity；`TopK` 只稀疏化专家
-计算，不丢弃 token，也不改变 token 的空间/时间顺序。`\bar h` 是 mask-aware
+混合权重，不丢弃 token，也不改变 token 的空间/时间顺序。当前实现仍计算所有
+专家以保持实现简单，后续再测真正的 capacity-routed sparse dispatch。`\bar h` 是 mask-aware
 的全局上下文，不是 slot 或 pooling 后的唯一表示。为避免所有 token 塌缩到同一
 专家，训练时可以加入 Switch-style 的 importance/load balance：
 
@@ -271,6 +272,10 @@ y_i=x_i+W_o\left(F_{shared}(h_i)+
 \operatorname{Importance}_e\operatorname{Load}_e.
 \]
 
+`Importance` 使用 top-k 截断前的 dense softmax 概率，因此 top-1 路由仍能得到
+对 router 的可微平衡梯度；`Load` 使用截断后的 expert 选择，并按每个 token 的
+`k` 个选择归一化。`top_k=1` 和 `top_k=2` 因而可以在相同的 balance 标度下比较。
+
 该接口支持 `(B,N,C)` token、`(B,C,H,W)` image、`(B,C,T,H,W)` video，以及外部
 `coords=(B,N,3)` 和 `mask=(B,N)`。因此不规则点集可以直接输入同一个 adapter，
 不需要 reshape 到周期网格。坐标、局部状态和 latent content 共同决定专家权重，
@@ -278,7 +283,9 @@ y_i=x_i+W_o\left(F_{shared}(h_i)+
 
 实现位于 `hfvae/learnable_moe.py`，Wan latent 入口由
 `--latent-learnable-moe` 打开；`--output-learnable-moe` 用于 decoder-side
-对照。当前默认实验使用 4 个专家、top-2 路由和一个 shared expert。
+对照。当前默认实验使用 4 个专家、top-2 路由和一个 shared expert。专家职责不
+预先命名为 low/mid/high，也不把 slot 作为压缩表示；它们只通过内容、坐标和有效
+采样 mask 学习数据相关的分工。
 
 ### 对“用 MoE 处理高、中、低频”的直接回答
 
@@ -295,7 +302,7 @@ y_i=x_i+W_o\left(F_{shared}(h_i)+
 leakage。非规则点集没有固定的正交 DFT 基，直接 reshape 后做 FFT 会把几何采样误差
 混入频率误差。
 
-因此推荐的 MoE 形式是
+因此推荐的主线 MoE 形式是
 
 \[
 \Delta z=W_o\left(\sum_b \pi_b(z,r,m)E_b(G_b(z,r,m))
@@ -303,21 +310,16 @@ leakage。非规则点集没有固定的正交 DFT 基，直接 reshape 后做 F
 \qquad z'=z+\Delta z,
 \]
 
-其中 `G_b` 是 soft 的尺度提取器，`pi_b` 同时读取低频背景、局部梯度/涡量、坐标
-和有效采样 mask。对于当前规则 `data_128`，建议的专家职责为：
-
-- low：大感受野或低阶 spectral expert，负责压力耦合和慢变背景；
-- mid：局部卷积或 window attention，负责涡旋输运；
-- high：wavelet/local residual expert，负责 resolved shear/detail，同时限制伪影；
-- irregular：point kernel、graph message passing 或 token attention，直接接收
-  `(value, coordinate, mask)`，不要求规则网格；
-- cross：允许低频背景调制高频响应，保留 NS 对流项的 triadic coupling。
+其中 `G_b` 不需要是固定的 Fourier 频带；它可以是共享 token MLP、局部消息传递、
+坐标条件 kernel 或其他可学习 expert。对于当前规则 `data_128`，低/中/高频只应
+作为分析标签而不是路由监督；对于 irregular 分支，point kernel、graph message
+passing 或 token attention 可直接接收 `(value, coordinate, mask)`，不要求规则网格。
 
 `W_o` 零初始化、soft/top-k gate 和 load-balance 正则很重要：新 adapter 的初始行为
 应等于 Wan VAE，避免改变原有 latent 坐标系；训练后再逐步学习哪些区域和尺度需要
 额外容量。仓库中的 `FrequencyBandMoE2d` 已覆盖规则网格的 FFT/local + cross-band
-版本，`hfvae/learnable_moe.py` 则提供了支持坐标和 mask 的 token MoE，后者适合作为
-不规则采样分支，但目前尚未计入 VAE 主实验结果。
+版本，`hfvae/learnable_moe.py` 则提供了支持坐标和 mask 的 token MoE；后者是当前
+不规则采样和无预设频带主线的候选，但仍需通过 VAE 与下游 rollout 实验验证。
 
 ### 当前实验矩阵
 
@@ -356,3 +358,23 @@ leakage。非规则点集没有固定的正交 DFT 基，直接 reshape 后做 F
 - [CondConv](https://arxiv.org/abs/1904.04971): 通过输入条件化权重混合实现 dynamic expert kernels。
 - [Sparsely-Gated MoE](https://openreview.net/pdf?id=B1ckMDql): 经典 learned routing 与 load-balancing 形式。
 - [NESTOR](https://arxiv.org/abs/2602.22059): 以 shared/global/local 层级构造 nested MoE neural operator。
+- [ABLE](https://arxiv.org/abs/2605.10451): 学习数据相关的 Parseval frame，说明固定 Fourier basis 的限制可以从“学习基底”而不只是“增加 modes”来缓解。
+- [SFO](https://arxiv.org/abs/2601.17090): 用 Universal Spectral Basis 做谱滤波，强调适配 kernel 结构的基底比盲目扩大 Fourier 截断更重要。
+- [GITO](https://arxiv.org/abs/2506.13906): 将图局部关系、Transformer 长程依赖和任意 query location 结合，适合作为 irregular branch 的 operator 对照。
+
+### 下一轮可执行的多模型实验
+
+在已有 FFT/local cross-band 与 token-MoE 之外，优先级如下：
+
+1. 用 `learnable token MoE` 比较不同初始化、top-1/top-2、专家数和 routing balance，
+   同时记录 expert importance/load，检查高频区域是否真的被单独路由，而不是所有 token
+   塌缩到同一 expert。
+2. 加入 nested global/local 路径：global context 只提供低频和长程条件，local token
+   experts 保留高频残差；这对应 NESTOR/M²M 的结构，但保留 zero-init latent contract。
+3. 在规则 `data_128` 上做 adaptive-basis ablation：让低频 expert 学习少量 radial
+   filter/basis 参数，而不是固定 cutoff；目标是区分“FFT 截断不足”和“固定 basis 不合适”。
+4. 对不规则采样只比较支持坐标的 GITO/GNO/GNOT/GINO 类分支，报告 `n_obs`、边界偏置、
+   query resolution 和缺失点 mask 的鲁棒性；不把 irregular 点强行 reshape 成 FFT 网格。
+
+最终选择仍然以三层证据为准：VAE 的 low/high reconstruction、latent FNO/Transolver/
+CNextU rollout，以及解码后的 physical rollout；单一 static rel-L2 改善不能作为保留依据。

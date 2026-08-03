@@ -50,6 +50,7 @@ class WanVAEHF(WanVAE_):
         learnable_moe_hidden: int = 64,
         learnable_moe_experts: int = 4,
         learnable_moe_top_k: int = 2,
+        learnable_moe_global: bool = False,
         output_band_moe: bool = False,
         **kwargs,
     ):
@@ -98,6 +99,7 @@ class WanVAEHF(WanVAE_):
                 hidden=learnable_moe_hidden,
                 num_experts=learnable_moe_experts,
                 top_k=learnable_moe_top_k,
+                global_context=learnable_moe_global,
             )
             if latent_learnable_moe
             else None
@@ -123,6 +125,7 @@ class WanVAEHF(WanVAE_):
                 hidden=learnable_moe_hidden,
                 num_experts=learnable_moe_experts,
                 top_k=learnable_moe_top_k,
+                global_context=learnable_moe_global,
             )
             if output_learnable_moe
             else None

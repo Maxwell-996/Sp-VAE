@@ -50,6 +50,7 @@ def build_model(args) -> WanVAEHF:
         learnable_moe_hidden=args.learnable_moe_hidden,
         learnable_moe_experts=args.learnable_moe_experts,
         learnable_moe_top_k=args.learnable_moe_top_k,
+        learnable_moe_global=args.learnable_moe_global,
         output_band_moe=args.output_band_moe,
     )
 
@@ -124,6 +125,7 @@ def main() -> None:
     ap.add_argument("--learnable-moe-hidden", type=int, default=64)
     ap.add_argument("--learnable-moe-experts", type=int, default=4)
     ap.add_argument("--learnable-moe-top-k", type=int, default=2)
+    ap.add_argument("--learnable-moe-global", action="store_true")
     ap.add_argument("--output-band-moe", action="store_true")
 
     # Objective knobs.

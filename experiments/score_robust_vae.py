@@ -95,7 +95,7 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
                 "--lambda-latent-consistency",
                 "0.05",
             "--lambda-noisy-reconstruction",
-            "0.05",
+            str(args.lambda_noisy_reconstruction),
             "--lambda-wavelet",
             str(args.lambda_wavelet),
             "--wavelet-levels",
@@ -230,6 +230,7 @@ def main() -> None:
     parser.add_argument("--noise-cutoff", type=float, default=0.20)
     parser.add_argument("--noise-amplitude", type=float, default=0.10)
     parser.add_argument("--transition", type=float, default=0.04)
+    parser.add_argument("--lambda-noisy-reconstruction", type=float, default=0.02)
     parser.add_argument("--lambda-wavelet", type=float, default=0.0)
     parser.add_argument("--wavelet-levels", type=int, default=2)
     args = parser.parse_args()

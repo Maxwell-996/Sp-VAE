@@ -296,6 +296,8 @@ class FrequencyBandMoE2d(nn.Module):
         global_low: bool = False,
         decomposition: str = "fft",
         cross_band: bool = False,
+        shared_expert: bool = False,
+        router_smooth: bool = False,
     ):
         super().__init__()
         if not 0.0 < low_cutoff < high_cutoff:
@@ -308,6 +310,8 @@ class FrequencyBandMoE2d(nn.Module):
         self.global_low = bool(global_low)
         self.decomposition = decomposition
         self.cross_band = bool(cross_band)
+        self.shared_expert_enabled = bool(shared_expert)
+        self.router_smooth = bool(router_smooth)
         self.router = nn.Sequential(
             nn.Conv2d(3, hidden, 1),
             nn.GELU(),
@@ -344,6 +348,18 @@ class FrequencyBandMoE2d(nn.Module):
         if self.cross_proj is not None:
             nn.init.zeros_(self.cross_proj.weight)
             nn.init.zeros_(self.cross_proj.bias)
+        self.shared_expert = (
+            nn.Sequential(
+                nn.Conv2d(channels, channels, 3, padding=1, groups=channels),
+                nn.GELU(),
+                nn.Conv2d(channels, channels, 1),
+            )
+            if self.shared_expert_enabled
+            else None
+        )
+        if self.shared_expert is not None:
+            nn.init.zeros_(self.shared_expert[-1].weight)
+            nn.init.zeros_(self.shared_expert[-1].bias)
         self.out_proj = nn.Conv2d(channels, channels, 1)
         nn.init.zeros_(self.out_proj.weight)
         nn.init.zeros_(self.out_proj.bias)
@@ -373,7 +389,13 @@ class FrequencyBandMoE2d(nn.Module):
             dim=1,
         )
         b, _c, t, h, w = x5.shape
-        logits = self.router(router_features.permute(0, 2, 1, 3, 4).reshape(b * t, 3, h, w))
+        router_features = router_features.permute(0, 2, 1, 3, 4).reshape(
+            b * t, 3, h, w
+        )
+        if self.router_smooth:
+            router_features = F.pad(router_features, (1, 1, 1, 1), mode="circular")
+            router_features = F.avg_pool2d(router_features, 3, stride=1)
+        logits = self.router(router_features)
         weights = logits.softmax(dim=1)
 
         bands = (low, mid, high)
@@ -389,6 +411,9 @@ class FrequencyBandMoE2d(nn.Module):
         if self.cross_proj is not None:
             mixed = mixed + self.cross_proj(torch.cat(expert_outputs, dim=1))
         mixed = self.out_proj(mixed)
+        if self.shared_expert is not None:
+            shared_input = x5.permute(0, 2, 1, 3, 4).reshape(b * t, self.channels, h, w)
+            mixed = mixed + self.shared_expert(shared_input)
         mixed = mixed.reshape(b, t, self.channels, h, w).permute(0, 2, 1, 3, 4)
         return _restore_shape(x5 + mixed, orig)
 

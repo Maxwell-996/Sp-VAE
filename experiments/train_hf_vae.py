@@ -43,6 +43,8 @@ def build_model(args) -> WanVAEHF:
         moe_global_low=args.moe_global_low,
         moe_decomposition=args.moe_decomposition,
         moe_cross_band=args.moe_cross_band,
+        moe_shared_expert=args.moe_shared_expert,
+        moe_router_smooth=args.moe_router_smooth,
         output_band_moe=args.output_band_moe,
     )
 
@@ -110,6 +112,8 @@ def main() -> None:
     ap.add_argument("--moe-global-low", action="store_true")
     ap.add_argument("--moe-decomposition", choices=["fft", "local"], default="fft")
     ap.add_argument("--moe-cross-band", action="store_true")
+    ap.add_argument("--moe-shared-expert", action="store_true")
+    ap.add_argument("--moe-router-smooth", action="store_true")
     ap.add_argument("--output-band-moe", action="store_true")
 
     # Objective knobs.

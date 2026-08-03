@@ -42,6 +42,8 @@ class WanVAEHF(WanVAE_):
         moe_global_low: bool = False,
         moe_decomposition: str = "fft",
         moe_cross_band: bool = False,
+        moe_shared_expert: bool = False,
+        moe_router_smooth: bool = False,
         output_band_moe: bool = False,
         **kwargs,
     ):
@@ -78,6 +80,8 @@ class WanVAEHF(WanVAE_):
                 global_low=moe_global_low,
                 decomposition=moe_decomposition,
                 cross_band=moe_cross_band,
+                shared_expert=moe_shared_expert,
+                router_smooth=moe_router_smooth,
             )
             if latent_band_moe
             else None
@@ -91,6 +95,8 @@ class WanVAEHF(WanVAE_):
                 global_low=moe_global_low,
                 decomposition=moe_decomposition,
                 cross_band=moe_cross_band,
+                shared_expert=moe_shared_expert,
+                router_smooth=moe_router_smooth,
             )
             if output_band_moe
             else None

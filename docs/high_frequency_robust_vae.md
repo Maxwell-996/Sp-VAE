@@ -243,6 +243,45 @@ Wavelet Neural Operator 用空间局部化的尺度函数替代纯全局 Fourier
 当前的结论：频率/尺度应作为专家的归纳偏置，而不应被当成精确、全局且互不耦合
 的真值标签。
 
+### 对“用 MoE 处理高、中、低频”的直接回答
+
+可以使用 MoE，而且它比单一 FFT backbone 更适合表达 NS 中不同空间尺度的局部差异，
+但 MoE 的作用是分配容量和归纳偏置，不是恢复采样前已经丢失的信息。给定采样算子
+`S`，观测为 `y=Sx+epsilon` 时，任何模型都受限于不可辨识项
+
+\[
+\| (I-P_{\mathrm{resolved}})x\| + \|A_{\mathrm{alias}}x\| + \|\epsilon\|,
+\]
+
+其中第一项是未解析尺度，第二项是 aliasing，第三项是观测噪声。FFT modes 增大只
+能减少模型自己的谱截断误差，不能消除这三项；非周期边界还会额外产生 spectral
+leakage。非规则点集没有固定的正交 DFT 基，直接 reshape 后做 FFT 会把几何采样误差
+混入频率误差。
+
+因此推荐的 MoE 形式是
+
+\[
+\Delta z=W_o\left(\sum_b \pi_b(z,r,m)E_b(G_b(z,r,m))
+ +E_{\mathrm{cross}}(z_l,z_m,z_h)\right),
+\qquad z'=z+\Delta z,
+\]
+
+其中 `G_b` 是 soft 的尺度提取器，`pi_b` 同时读取低频背景、局部梯度/涡量、坐标
+和有效采样 mask。对于当前规则 `data_128`，建议的专家职责为：
+
+- low：大感受野或低阶 spectral expert，负责压力耦合和慢变背景；
+- mid：局部卷积或 window attention，负责涡旋输运；
+- high：wavelet/local residual expert，负责 resolved shear/detail，同时限制伪影；
+- irregular：point kernel、graph message passing 或 token attention，直接接收
+  `(value, coordinate, mask)`，不要求规则网格；
+- cross：允许低频背景调制高频响应，保留 NS 对流项的 triadic coupling。
+
+`W_o` 零初始化、soft/top-k gate 和 load-balance 正则很重要：新 adapter 的初始行为
+应等于 Wan VAE，避免改变原有 latent 坐标系；训练后再逐步学习哪些区域和尺度需要
+额外容量。仓库中的 `FrequencyBandMoE2d` 已覆盖规则网格的 FFT/local + cross-band
+版本，未跟踪的 `hfvae/learnable_moe.py` 则提供了支持坐标和 mask 的 token MoE 原型，
+后者适合作为不规则采样分支，但目前尚未计入 VAE 主实验结果。
+
 ### 当前实验矩阵
 
 在固定 `data_128`、相同 Wan 初始化、相同 1 epoch 训练和相同 operator 协议下，

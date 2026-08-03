@@ -243,6 +243,43 @@ Wavelet Neural Operator 用空间局部化的尺度函数替代纯全局 Fourier
 当前的结论：频率/尺度应作为专家的归纳偏置，而不应被当成精确、全局且互不耦合
 的真值标签。
 
+## Learnable Token MoE
+
+固定 `P_low/P_mid/P_high` 只适合作为消融基线。当前主方向改为保留 token 对应
+关系的 learnable routed MoE。对每个 token `i`，先构造内容和坐标条件特征
+
+\[
+h_i=\operatorname{MLP}([x_i, c_i]),
+\qquad
+g_i=\operatorname{TopKSoftmax}(R([h_i,\bar h])),
+\]
+
+再用 shared expert 和 routed experts 混合：
+
+\[
+y_i=x_i+W_o\left(F_{shared}(h_i)+
+\sum_{e=1}^{E}g_{i,e}F_e(h_i)\right).
+\]
+
+其中 `W_o` 零初始化，保证新模块接入时仍是 identity；`TopK` 只稀疏化专家
+计算，不丢弃 token，也不改变 token 的空间/时间顺序。`\bar h` 是 mask-aware
+的全局上下文，不是 slot 或 pooling 后的唯一表示。为避免所有 token 塌缩到同一
+专家，训练时可以加入 Switch-style 的 importance/load balance：
+
+\[
+\mathcal L_{balance}=E\sum_e
+\operatorname{Importance}_e\operatorname{Load}_e.
+\]
+
+该接口支持 `(B,N,C)` token、`(B,C,H,W)` image、`(B,C,T,H,W)` video，以及外部
+`coords=(B,N,3)` 和 `mask=(B,N)`。因此不规则点集可以直接输入同一个 adapter，
+不需要 reshape 到周期网格。坐标、局部状态和 latent content 共同决定专家权重，
+专家的“低频/高频/边界/输运”功能由训练形成，而不是由 FFT cutoff 预先规定。
+
+实现位于 `hfvae/learnable_moe.py`，Wan latent 入口由
+`--latent-learnable-moe` 打开；`--output-learnable-moe` 用于 decoder-side
+对照。当前默认实验使用 4 个专家、top-2 路由和一个 shared expert。
+
 ### 对“用 MoE 处理高、中、低频”的直接回答
 
 可以使用 MoE，而且它比单一 FFT backbone 更适合表达 NS 中不同空间尺度的局部差异，
@@ -294,6 +331,8 @@ leakage。非规则点集没有固定的正交 DFT 基，直接 reshape 后做 F
 | latent local + cross-band | FFT 周期投影/分带误差是瓶颈 | 与 FFT + cross-band 配对比较 |
 | output-band MoE | decoder 端分频能改善细节但少扰动 latent | static 与 decoded physical rollout |
 | global-low MoE | 低频长程专家能降低背景误差 | FNO/Transolver/CNextU 三者均不能显著退化 |
+| learnable token MoE top-2 | 内容/坐标条件路由比固定频带更适合 latent | static、三算子 rollout 和 arbitrary-token smoke test |
+| learnable token MoE top-1/8 experts | 稀疏度与专家容量的 trade-off | 与 top-2/4 配对比较 |
 
 最终保留标准不是单一 `valid rel-L2`：候选必须同时报告 low/high-band reconstruction、
 高频泄漏、FNO/Transolver/CNextU latent rollout，以及解码后的 physical rollout。
@@ -313,3 +352,7 @@ leakage。非规则点集没有固定的正交 DFT 基，直接 reshape 后做 F
 - [Geo-FNO](https://arxiv.org/abs/2207.05209): 用 learned deformation 把一般几何映射到适合 FFT 的潜在规则坐标。
 - [M²M](https://arxiv.org/abs/2410.11617): 用多尺度、多专家和动态 gate 处理 PDE 中不同区域的振荡尺度。
 - [Geometry-Informed Neural Operator](https://proceedings.neurips.cc/paper_files/paper/2023/file/70518ea42831f02afc3a2828993935ad-Paper-Conference.pdf): 结合几何编码和 Fourier/局部算子处理复杂几何。
+- [From Sparse to Soft Mixture of Experts](https://openreview.net/pdf?id=jxpsAj7ltE): 用可学习 soft token mixing 避免硬 token dispatch 和 token dropping。
+- [CondConv](https://arxiv.org/abs/1904.04971): 通过输入条件化权重混合实现 dynamic expert kernels。
+- [Sparsely-Gated MoE](https://openreview.net/pdf?id=B1ckMDql): 经典 learned routing 与 load-balancing 形式。
+- [NESTOR](https://arxiv.org/abs/2602.22059): 以 shared/global/local 层级构造 nested MoE neural operator。

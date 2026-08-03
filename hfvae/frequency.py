@@ -278,7 +278,13 @@ class HighFrequencyScaling2d(nn.Module):
 
 
 class FrequencyBandMoE2d(nn.Module):
-    """Zero-initialized local experts routed by coarse and physical features."""
+    """Zero-initialized multi-scale experts routed by coarse and physical features.
+
+    ``decomposition='fft'`` uses global radial bands. ``'local'`` uses a
+    Laplacian-pyramid-like split, which keeps the same residual contract while
+    avoiding a periodic FFT projection. ``cross_band`` adds a zero-initialized
+    interaction path so experts can model triadic/coarse-to-fine coupling.
+    """
 
     def __init__(
         self,
@@ -288,14 +294,20 @@ class FrequencyBandMoE2d(nn.Module):
         low_cutoff: float = 0.20,
         high_cutoff: float = 0.50,
         global_low: bool = False,
+        decomposition: str = "fft",
+        cross_band: bool = False,
     ):
         super().__init__()
         if not 0.0 < low_cutoff < high_cutoff:
             raise ValueError("expected 0 < low_cutoff < high_cutoff")
+        if decomposition not in ("fft", "local"):
+            raise ValueError("decomposition must be 'fft' or 'local'")
         self.channels = int(channels)
         self.low_cutoff = float(low_cutoff)
         self.high_cutoff = float(high_cutoff)
         self.global_low = bool(global_low)
+        self.decomposition = decomposition
+        self.cross_band = bool(cross_band)
         self.router = nn.Sequential(
             nn.Conv2d(3, hidden, 1),
             nn.GELU(),
@@ -316,6 +328,22 @@ class FrequencyBandMoE2d(nn.Module):
             if self.global_low
             else None
         )
+        self.local_mid_blur = (
+            BlurPool2d(channels, filt_size=3, boundary="circular")
+            if decomposition == "local"
+            else None
+        )
+        self.local_low_blur = (
+            BlurPool2d(channels, filt_size=5, boundary="circular")
+            if decomposition == "local"
+            else None
+        )
+        self.cross_proj = (
+            nn.Conv2d(channels * 3, channels, 1) if self.cross_band else None
+        )
+        if self.cross_proj is not None:
+            nn.init.zeros_(self.cross_proj.weight)
+            nn.init.zeros_(self.cross_proj.bias)
         self.out_proj = nn.Conv2d(channels, channels, 1)
         nn.init.zeros_(self.out_proj.weight)
         nn.init.zeros_(self.out_proj.bias)
@@ -324,9 +352,17 @@ class FrequencyBandMoE2d(nn.Module):
         x5, orig = _as_5d(x)
         if x5.shape[1] != self.channels:
             raise ValueError(f"expected {self.channels} channels, got {x5.shape[1]}")
-        low = lowpass_filter_2d(x5, self.low_cutoff)
-        high = highpass_filter_2d(x5, self.high_cutoff)
-        mid = x5 - low - high
+        if self.decomposition == "fft":
+            low = lowpass_filter_2d(x5, self.low_cutoff)
+            high = highpass_filter_2d(x5, self.high_cutoff)
+            mid = x5 - low - high
+        else:
+            assert self.local_mid_blur is not None
+            assert self.local_low_blur is not None
+            smooth = self.local_mid_blur(x5)
+            low = self.local_low_blur(x5)
+            mid = smooth - low
+            high = x5 - smooth
 
         u, v = x5[:, 0], x5[:, 1]
         du_dy = 0.5 * (torch.roll(u, -1, dims=-2) - torch.roll(u, 1, dims=-2))
@@ -342,12 +378,16 @@ class FrequencyBandMoE2d(nn.Module):
 
         bands = (low, mid, high)
         mixed = x5.new_zeros((b * t, self.channels, h, w))
+        expert_outputs = []
         for i, band in enumerate(bands):
             band2d = band.permute(0, 2, 1, 3, 4).reshape(b * t, self.channels, h, w)
             expert_out = self.experts[i](band2d)
             if i == 0 and self.low_spectral is not None:
                 expert_out = self.low_spectral(expert_out)
+            expert_outputs.append(expert_out)
             mixed = mixed + weights[:, i : i + 1] * expert_out
+        if self.cross_proj is not None:
+            mixed = mixed + self.cross_proj(torch.cat(expert_outputs, dim=1))
         mixed = self.out_proj(mixed)
         mixed = mixed.reshape(b, t, self.channels, h, w).permute(0, 2, 1, 3, 4)
         return _restore_shape(x5 + mixed, orig)

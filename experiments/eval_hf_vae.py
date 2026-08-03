@@ -42,6 +42,8 @@ def build_from_ckpt(path: str, device: torch.device) -> tuple[WanVAEHF, dict]:
         moe_low_cutoff=a.get("moe_low_cutoff", 0.20),
         moe_high_cutoff=a.get("moe_high_cutoff", 0.50),
         moe_global_low=a.get("moe_global_low", False),
+        moe_decomposition=a.get("moe_decomposition", "fft"),
+        moe_cross_band=a.get("moe_cross_band", False),
         output_band_moe=a.get("output_band_moe", False),
     ).to(device)
     model.load_state_dict(ck["model"])

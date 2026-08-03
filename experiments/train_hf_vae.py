@@ -41,6 +41,8 @@ def build_model(args) -> WanVAEHF:
         moe_low_cutoff=args.moe_low_cutoff,
         moe_high_cutoff=args.moe_high_cutoff,
         moe_global_low=args.moe_global_low,
+        moe_decomposition=args.moe_decomposition,
+        moe_cross_band=args.moe_cross_band,
         output_band_moe=args.output_band_moe,
     )
 
@@ -106,6 +108,8 @@ def main() -> None:
     ap.add_argument("--moe-low-cutoff", type=float, default=0.20)
     ap.add_argument("--moe-high-cutoff", type=float, default=0.50)
     ap.add_argument("--moe-global-low", action="store_true")
+    ap.add_argument("--moe-decomposition", choices=["fft", "local"], default="fft")
+    ap.add_argument("--moe-cross-band", action="store_true")
     ap.add_argument("--output-band-moe", action="store_true")
 
     # Objective knobs.

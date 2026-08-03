@@ -40,6 +40,8 @@ class WanVAEHF(WanVAE_):
         moe_low_cutoff: float = 0.20,
         moe_high_cutoff: float = 0.50,
         moe_global_low: bool = False,
+        moe_decomposition: str = "fft",
+        moe_cross_band: bool = False,
         output_band_moe: bool = False,
         **kwargs,
     ):
@@ -74,6 +76,8 @@ class WanVAEHF(WanVAE_):
                 low_cutoff=moe_low_cutoff,
                 high_cutoff=moe_high_cutoff,
                 global_low=moe_global_low,
+                decomposition=moe_decomposition,
+                cross_band=moe_cross_band,
             )
             if latent_band_moe
             else None
@@ -85,6 +89,8 @@ class WanVAEHF(WanVAE_):
                 low_cutoff=moe_low_cutoff,
                 high_cutoff=moe_high_cutoff,
                 global_low=moe_global_low,
+                decomposition=moe_decomposition,
+                cross_band=moe_cross_band,
             )
             if output_band_moe
             else None

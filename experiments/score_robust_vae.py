@@ -85,7 +85,7 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
                 "--output-hfs",
                 "--decoder-spectral-filter",
                 "--filter-cutoff",
-                "0.15",
+                "0.10",
                 "--hfs-cutoff",
                 "0.15",
                 "--lambda-lowpass",

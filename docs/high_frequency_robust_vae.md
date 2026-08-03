@@ -174,6 +174,91 @@ HF embedding 在三个模型的 one-step 和 rollout 都优于同预算 vanilla_
 4. 结论依赖下游架构：1 epoch `hf_noisy0` 对 FNO、Transolver、CNextU 都有收益；继续训练或 temporal difference 都可能改变不同 operator 的排序。
 5. 选 VAE 不能只看 valid reconstruction：当前通用 latent rollout 最佳是 1 epoch `hf_noisy0`，clean reconstruction 最佳是 3 epoch `hf_noisy0_3ep`；最终应按目标 operator 选择 checkpoint。
 
+## 多频带 MoE 与 FFT 的边界
+
+### 不是把频率硬切成三个独立模型
+
+对规则、周期网格，可以写成
+
+\[
+x=P_lx+P_mx+P_hx,
+\qquad
+y=x+W_o\left[\sum_{b\in\{l,m,h\}}
+\pi_b(c(x,r))E_b(P_bx)+E_{cross}(P_lx,P_mx,P_hx)\right].
+\]
+
+这里 `P_b` 是低、中、高频分解，`E_b` 是带有不同归纳偏置的专家，
+`\pi_b` 是依赖位置 `r` 和局部物理状态的 soft router，`E_cross` 是跨频带
+交互。最后一项不能省略：Navier--Stokes 的非线性对流项满足
+
+\[
+\widehat{(u\cdot\nabla)u}(k)
+ =\sum_{p+q=k}(iq\cdot\hat u(p))\hat u(q),
+\]
+
+因此低频背景、中频结构和高频剪切层会发生 triadic coupling。完全独立的
+low/mid/high experts 只适合做诊断，不适合直接作为动力学模型。当前实现中的
+`--moe-cross-band` 正是一个零初始化的交互路径：初始仍是 Wan VAE，训练后才
+允许专家交换信息。
+
+MoE 解决的是容量和归纳偏置的分配，不会恢复采样前已经丢失的频率。对当前 NS
+数据，更合理的专家职责是：
+
+- low：全局谱或大感受野分支，保持慢变背景和长程压力耦合；
+- mid：局部卷积/窗口注意力，处理涡旋尺度和中尺度输运；
+- high：局部残差、Haar/wavelet 或梯度感知分支，处理剪切层和 resolved detail；
+- cross：低频背景调制高频专家，避免高频专家独立地产生伪影；
+- router：低频均值、高频能量、速度梯度、涡量和坐标/边界信息，而不是只读
+  一个 FFT bin。
+
+### FFT 模态数的理论上限
+
+增加 FNO 的 modes 只能减少模型的谱截断误差，不能突破以下限制：
+
+1. 采样频率超过 Nyquist 后的成分已经 alias 到低频，无法从样本唯一恢复；
+2. 有限网格上的 FFT 是周期边界下的离散投影，边界不周期时会出现泄漏；
+3. 卷积、非线性和下采样会产生未被解析的高频，增加 modes 不能补回 sub-grid
+   信息；
+4. PDE 导数在谱域乘以 `|k|` 或 `|k|^2`，小的高频幅值误差可能比较大的低频
+   误差更快地放大为残差。
+
+所以“保留更多 modes”与“高频鲁棒”不是同一个目标。VAE 中首先要抑制
+decoder 产生的非物理高频，同时保留数据中真实且可预测的 resolved detail。
+
+### 规则和不规则采样
+
+标准 FFT 的正交、平移等变和 `O(N log N)` 优势依赖规则笛卡尔网格以及明确的
+边界条件。对于随机观测点、非规则网格或复杂几何，直接把点值 reshape 成图像
+再做 FFT 会把采样误差伪装成频率误差。可用三种替代：
+
+1. 先用守恒/周期感知的 mesh-to-grid，再使用 FFT expert；
+2. 用 point kernel、graph message passing 或 local attention 作为 high/mid
+   experts；
+3. 在几何域上用 learned coordinate deformation、图 Laplacian 或局部 wavelet
+   basis 建立谱坐标，再进行 soft routing。
+
+Geo-FNO 的 learned deformation 是“先把一般几何映射到可 FFT 空间”的代表；
+Wavelet Neural Operator 用空间局部化的尺度函数替代纯全局 Fourier basis；M²M
+则直接以多尺度、多专家和动态 gate 处理 PDE 中不同区域的振荡尺度。它们支持
+当前的结论：频率/尺度应作为专家的归纳偏置，而不应被当成精确、全局且互不耦合
+的真值标签。
+
+### 当前实验矩阵
+
+在固定 `data_128`、相同 Wan 初始化、相同 1 epoch 训练和相同 operator 协议下，
+依次比较：
+
+| 变体 | 主要假设 | 后续判据 |
+| --- | --- | --- |
+| latent FFT MoE | 频带容量分配有效 | 静态重建和 latent rollout |
+| latent FFT + cross-band | Transolver 变差来自频带耦合不足 | 尤其比较 Transolver rollout |
+| latent local + cross-band | FFT 周期投影/分带误差是瓶颈 | 与 FFT + cross-band 配对比较 |
+| output-band MoE | decoder 端分频能改善细节但少扰动 latent | static 与 decoded physical rollout |
+| global-low MoE | 低频长程专家能降低背景误差 | FNO/Transolver/CNextU 三者均不能显著退化 |
+
+最终保留标准不是单一 `valid rel-L2`：候选必须同时报告 low/high-band reconstruction、
+高频泄漏、FNO/Transolver/CNextU latent rollout，以及解码后的 physical rollout。
+
 `experiments/eval_operator_physical.py` 用对应 VAE 将完整 latent rollout 解码后评估物理场误差；`runs/` 下的 checkpoints、latent caches 和 CSV/JSON 是本次实验的原始产物，均未修改 `diff_pde`。
 
 ## 参考依据
@@ -185,3 +270,7 @@ HF embedding 在三个模型的 one-step 和 rollout 都优于同预算 vanilla_
 - [Fourier Neural Operator for Parametric PDEs, ICLR 2021](https://arxiv.org/abs/2010.08895): FNO 直接在 Fourier 模态上学习 PDE solution operator。
 - Physics-Informed Neural Operator, 2021: 将数据 loss 和 PDE loss 结合，适合作为后续突破“重建好但残差高”的路径。
 - Transolver, 2024: physics-attention 通过物理 slice/token 捕捉复杂几何或场相关性。
+- [Wavelet Neural Operator](https://arxiv.org/abs/2205.02191): 用空间局部化的小波尺度替代纯全局 Fourier 模态。
+- [Geo-FNO](https://arxiv.org/abs/2207.05209): 用 learned deformation 把一般几何映射到适合 FFT 的潜在规则坐标。
+- [M²M](https://arxiv.org/abs/2410.11617): 用多尺度、多专家和动态 gate 处理 PDE 中不同区域的振荡尺度。
+- [Geometry-Informed Neural Operator](https://proceedings.neurips.cc/paper_files/paper/2023/file/70518ea42831f02afc3a2828993935ad-Paper-Conference.pdf): 结合几何编码和 Fourier/局部算子处理复杂几何。

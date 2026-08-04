@@ -76,6 +76,7 @@ def main() -> None:
         "--seed",
         "3407",
         "--operator-moe",
+        "--operator-internal-moe",
         "--operator-moe-hidden",
         "64",
         "--operator-moe-experts",

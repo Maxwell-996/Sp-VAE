@@ -132,14 +132,14 @@ class OperatorMoEAdapter(torch.nn.Module):
         self.base = base
         self.moe = LearnableTokenMoE(
             channels,
-            hidden=args.operator_moe_hidden,
-            num_experts=args.operator_moe_experts,
-            top_k=args.operator_moe_top_k,
-            global_context=args.operator_moe_global,
-            router_inhibition=args.operator_moe_router_inhibition,
-            local_context=args.operator_moe_local_context,
-            shared_experts=args.operator_moe_shared_experts,
-            router_noise_std=args.operator_moe_router_noise,
+            hidden=getattr(args, "operator_moe_hidden", 64),
+            num_experts=getattr(args, "operator_moe_experts", 4),
+            top_k=getattr(args, "operator_moe_top_k", 2),
+            global_context=getattr(args, "operator_moe_global", False),
+            router_inhibition=getattr(args, "operator_moe_router_inhibition", False),
+            local_context=getattr(args, "operator_moe_local_context", False),
+            shared_experts=getattr(args, "operator_moe_shared_experts", 1),
+            router_noise_std=getattr(args, "operator_moe_router_noise", 0.0),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -157,12 +157,12 @@ class OperatorInternalMoE(torch.nn.Module):
             [
                 LearnableTokenMoE(
                     channel_count,
-                    hidden=args.operator_moe_hidden,
-                    num_experts=args.operator_moe_experts,
-                    top_k=args.operator_moe_top_k,
-                    global_context=args.operator_moe_global,
-                    shared_experts=args.operator_moe_shared_experts,
-                    router_noise_std=args.operator_moe_router_noise,
+                    hidden=getattr(args, "operator_moe_hidden", 64),
+                    num_experts=getattr(args, "operator_moe_experts", 4),
+                    top_k=getattr(args, "operator_moe_top_k", 2),
+                    global_context=getattr(args, "operator_moe_global", False),
+                    shared_experts=getattr(args, "operator_moe_shared_experts", 1),
+                    router_noise_std=getattr(args, "operator_moe_router_noise", 0.0),
                 )
                 for channel_count in channels
             ]
@@ -221,7 +221,7 @@ class OperatorInternalMoE(torch.nn.Module):
 def maybe_wrap_operator(
     model: torch.nn.Module, dim_out: int, name: str, args
 ) -> torch.nn.Module:
-    if getattr(args, "operator_internal_moe", False) or getattr(args, "operator_moe", False):
+    if getattr(args, "operator_internal_moe", False):
         model = OperatorInternalMoE(model, name, args)
     if not getattr(args, "operator_moe", False):
         return model

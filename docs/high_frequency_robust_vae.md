@@ -419,6 +419,36 @@ MoE 的 hard load 均匀不等于专家功能相同；重要性仍出现内容�
 CNextU 的最低 physical 值。因此当前没有“对所有
 operator 都占优”的单一 VAE，必须按目标下游模型选择配置。
 
+### Operator 内部 hidden-state MoE
+
+受 NESTOR 的 nested global/local operator 和 MoE Operator Transformer 的 layer-wise
+routing 启发，新增了一个只作用于 operator hidden state 的实验。FNO 的每个 spectral
+block、Transolver 的前三个 hidden token block、CNextU 的 encoder/neck/decoder stage
+后面各接一个零初始化的 `LearnableTokenMoE`；输出端仍保留当前 top-2 global/shared
+MoE。该模块不改 token 数量和空间位置，通过 `--operator-internal-moe` 显式启用。
+
+在固定 `hf_ddp_global8` latent、seed=3407、30 epoch、四卡训练和 240 条 test
+trajectory 的协议下，autoresearch 的 baseline 与内部 MoE 的 decoded physical
+结果为：
+
+| operator | output MoE only | output + internal MoE | change |
+| --- | ---: | ---: | ---: |
+| FNO | 0.174051 | **0.166324** | -4.44% |
+| Transolver | **0.374761** | 0.378130 | +0.90% |
+| CNextU | 0.181926 | **0.158129** | -13.08% |
+| mean | 0.243579 | **0.234194** | -3.85% |
+
+内部 hidden MoE 达到了 autoresearch 目标 `mean_physical_rel < 0.235`，但不能宣称
+对所有 backbone 都改善：Transolver 的 latent rollout 变好而 decoded physical
+误差略变差，说明 decoder/latent-to-physical 映射仍会重新放大某些误差。当前保留
+internal MoE 作为 FNO/CNextU 候选，Transolver 仍使用 output-only 配置更稳妥。全层
+MoE 的计算代价也明显更高，尤其 CNextU 的高通道 bottleneck stage；后续应测试只在
+decoder 或低分辨率 stage 路由的容量折中。
+
+训练和评估代码对旧 checkpoint 做了兼容处理：`operator_moe` 与
+`operator_internal_moe` 是两个独立结构标志，读取缺少新字段的旧 checkpoint 时只
+重建 output adapter，不会凭 `operator_moe` 误加 hidden adapters。
+
 ### Adaptive global/local 失败假设
 
 受 SPAR/U-HNO 中按空间位置学习 global Fourier branch 与 local multi-scale
@@ -463,6 +493,8 @@ hard load 仍为均匀 `0.125`，global gate 平均值为 `0.4930`；这说明 g
 - [ABLE](https://arxiv.org/abs/2605.10451): 学习数据相关的 Parseval frame，说明固定 Fourier basis 的限制可以从“学习基底”而不只是“增加 modes”来缓解。
 - [SFO](https://arxiv.org/abs/2601.17090): 用 Universal Spectral Basis 做谱滤波，强调适配 kernel 结构的基底比盲目扩大 Fourier 截断更重要。
 - [GITO](https://arxiv.org/abs/2506.13906): 将图局部关系、Transformer 长程依赖和任意 query location 结合，适合作为 irregular branch 的 operator 对照。
+- [FreqMoE](https://arxiv.org/abs/2505.06858): 以逐步扩展的稀疏频率专家处理 PDE 的多尺度误差，说明频率相关容量分配可以独立于固定 dense FNO。
+- [Kernel Neural Operators](https://arxiv.org/abs/2407.00809): 用可学习紧支撑 kernel 和 quadrature 支持不规则点集，是 arbitrary-format high-frequency branch 的直接候选。
 
 ### 下一轮可执行的多模型实验
 
@@ -477,6 +509,8 @@ hard load 仍为均匀 `0.125`，global gate 平均值为 `0.4930`；这说明 g
    filter/basis 参数，而不是固定 cutoff；目标是区分“FFT 截断不足”和“固定 basis 不合适”。
 4. 对不规则采样只比较支持坐标的 GITO/GNO/GNOT/GINO 类分支，报告 `n_obs`、边界偏置、
    query resolution 和缺失点 mask 的鲁棒性；不把 irregular 点强行 reshape 成 FFT 网格。
+5. 对 internal MoE 做 stage 选择消融：FNO/Transolver 保留 hidden blocks，CNextU 只在
+   decoder 或低分辨率 bottleneck 路由，单独报告参数量、吞吐和 decoded physical error。
 
 最终选择仍然以三层证据为准：VAE 的 low/high reconstruction、latent FNO/Transolver/
 CNextU rollout，以及解码后的 physical rollout；单一 static rel-L2 改善不能作为保留依据。

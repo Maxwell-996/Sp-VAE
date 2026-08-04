@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Train and score the fixed three-operator latent rollout protocol."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out-root", required=True)
+    ap.add_argument("--latent-root", default="runs/latents_hf_ddp_global8")
+    ap.add_argument("--vae-ckpt", default="runs/hf_ddp_global8/hf_ddp_global8_best.pt")
+    ap.add_argument("--master-port", type=int, default=29943)
+    args = ap.parse_args()
+
+    out_root = Path(args.out_root).resolve()
+    if out_root.exists():
+        raise FileExistsError(f"score output already exists: {out_root}")
+    operator_root = out_root / "operator"
+    physical_root = out_root / "physical"
+    operator_root.mkdir(parents=True)
+    physical_root.mkdir(parents=True)
+
+    train_cmd = [
+        "torchrun",
+        "--standalone",
+        "--nproc_per_node=4",
+        f"--master_port={args.master_port}",
+        "experiments/train_latent_operator.py",
+        "--latent-root",
+        args.latent_root,
+        "--act-root",
+        "/media/home/lizhonghao/act/ACT-NeuralOP",
+        "--models",
+        "fno",
+        "transolver",
+        "cnextu",
+        "--out-csv",
+        str(operator_root / "results.csv"),
+        "--epochs",
+        "30",
+        "--batch",
+        "16",
+        "--lr",
+        "5e-4",
+        "--history",
+        "4",
+        "--hidden",
+        "64",
+        "--layers",
+        "4",
+        "--heads",
+        "8",
+        "--slice-num",
+        "32",
+        "--modes",
+        "8",
+        "--stages",
+        "3",
+        "--blocks-per-stage",
+        "1",
+        "--seed",
+        "3407",
+        "--operator-moe",
+        "--operator-moe-hidden",
+        "64",
+        "--operator-moe-experts",
+        "8",
+        "--operator-moe-top-k",
+        "2",
+        "--operator-moe-global",
+        "--operator-moe-shared-experts",
+        "2",
+    ]
+    subprocess.run(train_cmd, cwd=ROOT, check=True)
+
+    jobs = []
+    for index, model in enumerate(("fno", "transolver", "cnextu")):
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = str(index)
+        jobs.append(
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    "experiments/eval_operator_physical.py",
+                    "--latent-root",
+                    args.latent_root,
+                    "--operator-ckpt",
+                    str(operator_root / f"{model}_latent_operator.pt"),
+                    "--vae-ckpt",
+                    args.vae_ckpt,
+                    "--model",
+                    model,
+                    "--split",
+                    "test",
+                    "--batch",
+                    "2",
+                    "--amp",
+                    "--out-json",
+                    str(physical_root / f"{model}.json"),
+                ],
+                cwd=ROOT,
+                env=env,
+            )
+        )
+    for job in jobs:
+        if job.wait() != 0:
+            raise RuntimeError("physical operator scoring failed")
+
+    values = {}
+    for model in ("fno", "transolver", "cnextu"):
+        with (physical_root / f"{model}.json").open(encoding="utf-8") as handle:
+            values[model] = json.load(handle)["decoded_rollout_to_data_rel"]
+    mean_value = sum(values.values()) / len(values)
+    print(json.dumps({"mean_physical_rel": mean_value, "physical": values}, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

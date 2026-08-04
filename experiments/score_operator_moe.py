@@ -31,6 +31,7 @@ def main() -> None:
         choices=["token_choice", "expert_choice"],
         default="token_choice",
     )
+    ap.add_argument("--operator-moe-top-k", type=int, default=2)
     ap.add_argument("--master-port", type=int, default=29943)
     args = ap.parse_args()
 
@@ -93,7 +94,7 @@ def main() -> None:
         "--operator-moe-experts",
         "8",
         "--operator-moe-top-k",
-        "2",
+        str(args.operator_moe_top_k),
         "--operator-moe-global",
         "--operator-moe-routing",
         args.operator_moe_routing,

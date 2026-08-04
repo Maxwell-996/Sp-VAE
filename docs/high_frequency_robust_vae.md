@@ -470,13 +470,17 @@ experts、global context 和 all-stage internal MoE 配置下，只把路由从
 | --- | ---: | ---: | ---: | ---: |
 | token-choice | **0.166324** | 0.378130 | **0.158129** | **0.234194** |
 | expert-choice | 0.189372 | **0.365875** | 0.167789 | 0.241012 |
+| dense token-choice (`top-k=8`) | **0.164974** | **0.325435** | 0.175491 | **0.221967** |
 
 expert-choice 相比 output-only baseline 的 mean `0.243579` 仍有小幅改善，但比
 token-choice hidden MoE 的 `0.234194` 差 `2.91%`。它只改善了 Transolver，FNO 和
 CNextU 均退化，说明固定 expert 容量不是当前规则网格 NS latent 的通用高频先验。
-当前保留 `token_choice` 作为默认；`--operator-moe-routing expert_choice` 仅作为
-可学习路由的架构消融。该结果也支持“专家职责应由内容和坐标学习”，但不支持把
-expert-choice 本身当作更强的高频机制。
+相反，dense token-choice 让每个 token 对 8 个 expert 使用连续 softmax 权重，三模型
+mean 从 `0.234194` 降到 `0.221967`，相对改善 `5.22%`；其中 Transolver 改善最大，
+但 CNextU 从 `0.158129` 退化到 `0.175491`。因此三模型平均配置优先考虑 dense8，
+CNextU 专用配置仍保留 hard top-2；scorer 默认仍为 top-2，dense 配置通过
+`--operator-moe-top-k 8` 复现。该结果支持“可学习的连续专家组合”比固定 expert
+容量更有潜力，但不支持任何一种路由对所有 backbone 都普适。
 
 训练和评估代码对旧 checkpoint 做了兼容处理：`operator_moe` 与
 `operator_internal_moe` 是两个独立结构标志，读取缺少新字段的旧 checkpoint 时只

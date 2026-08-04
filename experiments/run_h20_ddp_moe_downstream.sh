@@ -55,9 +55,12 @@ run_variant() {
   wait "$fno_pid" "$transolver_pid" "$cnextu_pid"
 }
 
-# The VAE launcher runs these in order. Waiting makes this script safe to start
-# immediately and keeps all subsequent experiments attached to real checkpoints.
+# The VAE launcher runs these in order. Wait for the final routing file so this
+# queue never competes with an earlier four-GPU VAE job.
+while [ ! -f runs/hf_ddp_soft8/hf_ddp_soft8_best.pt ] || \
+      [ ! -f runs/hf_ddp_soft8/routing_valid.json ]; do
+  sleep 60
+done
 for name in hf_ddp_noise8 hf_ddp_fine16 hf_ddp_soft8; do
-  while [ ! -f "runs/$name/${name}_best.pt" ]; do sleep 60; done
   run_variant "$name" 29701 29801
 done

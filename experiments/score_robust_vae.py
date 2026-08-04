@@ -124,7 +124,7 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
                     "--learnable-moe-shared-experts",
                     "2",
                     "--learnable-moe-router-noise",
-                    str(args.moe_router_noise),
+                    "0.0",
                     "--lambda-moe-balance",
                     str(args.lambda_moe_balance),
                 ]

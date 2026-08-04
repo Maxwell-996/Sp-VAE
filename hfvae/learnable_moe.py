@@ -140,11 +140,6 @@ class LearnableTokenMoE(nn.Module):
             nn.Linear(hidden, hidden),
             nn.GELU(),
         )
-        self.router_coords = nn.Sequential(
-            nn.Linear(3, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, hidden),
-        )
         self.router = nn.Sequential(
             nn.LayerNorm(hidden * 2),
             nn.Linear(hidden * 2, num_experts),
@@ -226,8 +221,7 @@ class LearnableTokenMoE(nn.Module):
         denom = valid.sum(dim=1, keepdim=True).clamp_min(1.0)
         pooled = (features * valid).sum(dim=1, keepdim=True) / denom
         pooled = self.context(pooled)
-        routed_context = pooled.expand(-1, n, -1) + self.router_coords(coords)
-        routed = torch.cat((features, routed_context), dim=-1)
+        routed = torch.cat((features, pooled.expand(-1, n, -1)), dim=-1)
         temperature = self.log_temperature.exp().clamp(0.25, 4.0)
         logits = self.router(routed) / temperature
         if self.training and self.router_noise_std:

@@ -20,6 +20,12 @@ def main() -> None:
     ap.add_argument("--out-root", default=None)
     ap.add_argument("--latent-root", default="runs/latents_hf_ddp_global8")
     ap.add_argument("--vae-ckpt", default="runs/hf_ddp_global8/hf_ddp_global8_best.pt")
+    ap.add_argument("--models", nargs="+", default=["fno", "transolver", "cnextu"])
+    ap.add_argument(
+        "--operator-internal-moe-scope",
+        choices=["all", "decoder", "neck_decoder"],
+        default="all",
+    )
     ap.add_argument("--master-port", type=int, default=29943)
     args = ap.parse_args()
 
@@ -46,9 +52,7 @@ def main() -> None:
         "--act-root",
         "/media/home/lizhonghao/act/ACT-NeuralOP",
         "--models",
-        "fno",
-        "transolver",
-        "cnextu",
+        *args.models,
         "--out-csv",
         str(operator_root / "results.csv"),
         "--epochs",
@@ -77,6 +81,8 @@ def main() -> None:
         "3407",
         "--operator-moe",
         "--operator-internal-moe",
+        "--operator-internal-moe-scope",
+        args.operator_internal_moe_scope,
         "--operator-moe-hidden",
         "64",
         "--operator-moe-experts",
@@ -90,7 +96,7 @@ def main() -> None:
     subprocess.run(train_cmd, cwd=ROOT, check=True)
 
     jobs = []
-    for index, model in enumerate(("fno", "transolver", "cnextu")):
+    for index, model in enumerate(args.models):
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = str(index)
         jobs.append(
@@ -123,7 +129,7 @@ def main() -> None:
             raise RuntimeError("physical operator scoring failed")
 
     values = {}
-    for model in ("fno", "transolver", "cnextu"):
+    for model in args.models:
         with (physical_root / f"{model}.json").open(encoding="utf-8") as handle:
             values[model] = json.load(handle)["decoded_rollout_to_data_rel"]
     mean_value = sum(values.values()) / len(values)

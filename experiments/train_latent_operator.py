@@ -183,7 +183,15 @@ class OperatorInternalMoE(torch.nn.Module):
             targets = list(base.blocks[:-1])
             channels = [args.hidden] * len(targets)
         elif name == "cnextu":
-            targets = list(base.encoder) + [base.neck] + list(base.decoder)
+            scope = getattr(args, "operator_internal_moe_scope", "all")
+            if scope == "decoder":
+                targets = list(base.decoder)
+            elif scope == "neck_decoder":
+                targets = [base.neck] + list(base.decoder)
+            elif scope == "all":
+                targets = list(base.encoder) + [base.neck] + list(base.decoder)
+            else:
+                raise ValueError(f"unknown CNextU internal-MoE scope: {scope}")
             channels = []
             for module in targets:
                 resample = getattr(module, "resample", None)
@@ -356,6 +364,11 @@ def main() -> None:
     ap.add_argument("--blocks-per-stage", type=int, default=1)
     ap.add_argument("--grad-ckpt", action="store_true")
     ap.add_argument("--operator-internal-moe", action="store_true")
+    ap.add_argument(
+        "--operator-internal-moe-scope",
+        choices=["all", "decoder", "neck_decoder"],
+        default="all",
+    )
     ap.add_argument("--operator-moe", action="store_true")
     ap.add_argument("--operator-moe-hidden", type=int, default=64)
     ap.add_argument("--operator-moe-experts", type=int, default=4)

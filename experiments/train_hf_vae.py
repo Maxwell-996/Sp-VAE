@@ -191,7 +191,7 @@ def main() -> None:
         if not torch.cuda.is_available():
             raise RuntimeError("torchrun multi-GPU training requires CUDA")
         torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend="nccl")
+        dist.init_process_group(backend="nccl", device_id=local_rank)
 
     data_root = resolve_data_root(args.data_root)
     out_dir = Path(args.out_dir).resolve()

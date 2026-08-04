@@ -73,7 +73,7 @@ def main() -> None:
         if not torch.cuda.is_available():
             raise RuntimeError("torchrun multi-GPU caching requires CUDA")
         torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend="nccl")
+        dist.init_process_group(backend="nccl", device_id=local_rank)
     device = (
         torch.device("cuda", local_rank)
         if torch.cuda.is_available()

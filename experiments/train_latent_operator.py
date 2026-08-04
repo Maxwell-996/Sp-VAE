@@ -260,7 +260,7 @@ def main() -> None:
         if not torch.cuda.is_available():
             raise RuntimeError("torchrun multi-GPU operator training requires CUDA")
         torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend="nccl")
+        dist.init_process_group(backend="nccl", device_id=local_rank)
 
     add_act_root(args.act_root)
     seed_all(args.seed)
@@ -390,7 +390,7 @@ def main() -> None:
                 device_ids=[local_rank],
                 output_device=local_rank,
                 broadcast_buffers=False,
-                find_unused_parameters=False,
+                find_unused_parameters=True,
             )
         opt = torch.optim.AdamW(train_model.parameters(), lr=args.lr, weight_decay=1e-4)
         best = float("inf")

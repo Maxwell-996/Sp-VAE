@@ -221,7 +221,7 @@ class OperatorInternalMoE(torch.nn.Module):
 def maybe_wrap_operator(
     model: torch.nn.Module, dim_out: int, name: str, args
 ) -> torch.nn.Module:
-    if getattr(args, "operator_internal_moe", False):
+    if getattr(args, "operator_internal_moe", False) or getattr(args, "operator_moe", False):
         model = OperatorInternalMoE(model, name, args)
     if not getattr(args, "operator_moe", False):
         return model

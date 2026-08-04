@@ -112,7 +112,6 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
             train_args.extend(
                 [
                     "--latent-learnable-moe",
-                    "--output-learnable-moe",
                     "--learnable-moe-hidden",
                     str(args.moe_hidden),
                     "--learnable-moe-experts",

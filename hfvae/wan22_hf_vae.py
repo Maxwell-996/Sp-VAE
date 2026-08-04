@@ -51,6 +51,9 @@ class WanVAEHF(WanVAE_):
         learnable_moe_experts: int = 4,
         learnable_moe_top_k: int = 2,
         learnable_moe_global: bool = False,
+        learnable_moe_routing: str = "token_choice",
+        learnable_moe_shared_experts: int = 1,
+        learnable_moe_router_noise: float = 0.0,
         output_band_moe: bool = False,
         **kwargs,
     ):
@@ -100,6 +103,9 @@ class WanVAEHF(WanVAE_):
                 num_experts=learnable_moe_experts,
                 top_k=learnable_moe_top_k,
                 global_context=learnable_moe_global,
+                routing=learnable_moe_routing,
+                shared_experts=learnable_moe_shared_experts,
+                router_noise_std=learnable_moe_router_noise,
             )
             if latent_learnable_moe
             else None
@@ -126,6 +132,9 @@ class WanVAEHF(WanVAE_):
                 num_experts=learnable_moe_experts,
                 top_k=learnable_moe_top_k,
                 global_context=learnable_moe_global,
+                routing=learnable_moe_routing,
+                shared_experts=learnable_moe_shared_experts,
+                router_noise_std=learnable_moe_router_noise,
             )
             if output_learnable_moe
             else None

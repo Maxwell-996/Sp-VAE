@@ -85,13 +85,15 @@ class _Expert(nn.Module):
 
 
 class LearnableTokenMoE(nn.Module):
-    """Shared-plus-routed token MoE with optional sparse top-k gates.
+    """Shared-plus-routed token MoE with learnable sparse routing.
 
     Inputs can be ``(B,N,C)``, ``(B,C,H,W)``, or ``(B,C,T,H,W)``. For point
     clouds or irregular meshes, callers can provide ``coords=(B,N,3)`` and a
     boolean ``mask=(B,N)`` without resampling to a regular grid. The residual
     projection is zero initialized so a newly attached adapter is initially an
-    identity map.
+    identity map. ``token_choice`` gives every token up to ``top_k`` experts;
+    ``expert_choice`` lets every expert choose a fixed-capacity set of tokens,
+    while the output is still written back at the original token positions.
     """
 
     def __init__(
@@ -103,6 +105,9 @@ class LearnableTokenMoE(nn.Module):
         top_k: int = 2,
         expansion: int = 2,
         global_context: bool = False,
+        routing: str = "token_choice",
+        shared_experts: int = 1,
+        router_noise_std: float = 0.0,
     ):
         super().__init__()
         if channels < 1 or hidden < 1:
@@ -111,10 +116,19 @@ class LearnableTokenMoE(nn.Module):
             raise ValueError("num_experts must be positive")
         if top_k < 1 or top_k > num_experts:
             raise ValueError("top_k must satisfy 1 <= top_k <= num_experts")
+        if routing not in {"token_choice", "expert_choice"}:
+            raise ValueError("routing must be token_choice or expert_choice")
+        if shared_experts < 1:
+            raise ValueError("shared_experts must be positive")
+        if router_noise_std < 0:
+            raise ValueError("router_noise_std must be non-negative")
         self.channels = int(channels)
         self.hidden = int(hidden)
         self.num_experts = int(num_experts)
         self.top_k = int(top_k)
+        self.routing = routing
+        self.shared_experts = int(shared_experts)
+        self.router_noise_std = float(router_noise_std)
         self.global_context_enabled = bool(global_context)
         self.input = nn.Sequential(
             nn.LayerNorm(channels + 3),
@@ -131,6 +145,9 @@ class LearnableTokenMoE(nn.Module):
             [_Expert(hidden, expansion=expansion) for _ in range(num_experts)]
         )
         self.shared = _Expert(hidden, expansion=expansion)
+        self.shared_extra = nn.ModuleList(
+            [_Expert(hidden, expansion=expansion) for _ in range(shared_experts - 1)]
+        )
         self.global_expert = _Expert(hidden, expansion=expansion) if global_context else None
         self.output = nn.Linear(hidden, channels)
         nn.init.zeros_(self.output.weight)
@@ -204,33 +221,64 @@ class LearnableTokenMoE(nn.Module):
         routed = torch.cat((features, pooled.expand(-1, n, -1)), dim=-1)
         temperature = self.log_temperature.exp().clamp(0.25, 4.0)
         logits = self.router(routed) / temperature
+        if self.training and self.router_noise_std:
+            logits = logits + torch.randn_like(logits) * self.router_noise_std
         # Keep a dense probability path for the auxiliary loss. In particular,
         # top-1 routing otherwise turns importance into a non-differentiable
         # one-hot tensor and makes load balancing ineffective.
         dense_gates = torch.softmax(logits, dim=-1) * valid
         selection = torch.zeros_like(logits)
-        if self.top_k < self.num_experts:
-            top_values, top_indices = logits.topk(self.top_k, dim=-1)
-            sparse = torch.full_like(logits, float("-inf"))
-            routed_logits = sparse.scatter(-1, top_indices, top_values)
-            selection.scatter_(-1, top_indices, 1.0)
-            gates = torch.softmax(routed_logits, dim=-1) * valid
+        if self.routing == "expert_choice":
+            # Equal expert capacity removes token-side winner-take-all
+            # pressure. The top_k value sets the target average number of
+            # expert assignments per token, matching token-choice compute.
+            flat_logits = logits.reshape(batch * n, self.num_experts)
+            flat_valid = mask.reshape(batch * n)
+            valid_count = int(flat_valid.sum().item())
+            capacity = max(
+                1,
+                math.ceil(self.top_k * max(valid_count, 1) / self.num_experts),
+            )
+            capacity = min(capacity, batch * n)
+            choice_logits = flat_logits.masked_fill(~flat_valid[:, None], float("-inf"))
+            _, top_indices = choice_logits.topk(capacity, dim=0)
+            selection_flat = torch.zeros_like(flat_logits)
+            selection_flat.scatter_(0, top_indices, 1.0)
+            selection = selection_flat.reshape(batch, n, self.num_experts) * valid
+            routed_logits = logits.masked_fill(selection == 0, float("-inf"))
+            has_route = selection.any(dim=-1, keepdim=True)
+            safe_logits = torch.where(has_route, routed_logits, torch.zeros_like(routed_logits))
+            route_gates = torch.softmax(safe_logits, dim=-1)
+            gates = route_gates * has_route * valid
         else:
-            selection.fill_(1.0)
-            gates = dense_gates
+            if self.top_k < self.num_experts:
+                top_values, top_indices = logits.topk(self.top_k, dim=-1)
+                sparse = torch.full_like(logits, float("-inf"))
+                routed_logits = sparse.scatter(-1, top_indices, top_values)
+                selection.scatter_(-1, top_indices, 1.0)
+                gates = torch.softmax(routed_logits, dim=-1) * valid
+            else:
+                selection.fill_(1.0)
+                gates = dense_gates
 
         expert_values = torch.stack([expert(features) for expert in self.experts], dim=2)
         routed_value = torch.einsum("bne,bneh->bnh", gates, expert_values)
-        mixed = self.shared(features) + routed_value
+        shared_values = [self.shared(features)]
+        shared_values.extend(expert(features) for expert in self.shared_extra)
+        shared_value = torch.stack(shared_values, dim=2).mean(dim=2)
+        mixed = shared_value + routed_value
         if self.global_expert is not None:
             mixed = mixed + self.global_expert(pooled).expand(-1, n, -1)
         delta = self.output(mixed) * valid
 
         importance = dense_gates.sum(dim=(0, 1)) / valid.sum().clamp_min(1.0)
         selected = selection * valid
-        load = selected.sum(dim=(0, 1)) / (
-            valid.sum().clamp_min(1.0) * self.top_k
-        )
+        if self.routing == "expert_choice":
+            load = selected.sum(dim=(0, 1)) / selected.sum().clamp_min(1.0)
+        else:
+            load = selected.sum(dim=(0, 1)) / (
+                valid.sum().clamp_min(1.0) * self.top_k
+            )
         self._balance_loss = self.num_experts * (importance * load).sum()
         self.last_importance.copy_(importance.detach())
         self.last_load.copy_(load.detach())

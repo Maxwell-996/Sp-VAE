@@ -287,6 +287,36 @@ y_i=x_i+W_o\left(F_{shared}(h_i)+
 预先命名为 low/mid/high，也不把 slot 作为压缩表示；它们只通过内容、坐标和有效
 采样 mask 学习数据相关的分工。
 
+### Token-choice 与 expert-choice
+
+当前实现同时支持两种仍保留 token 对应关系的可学习稀疏路由。`token_choice` 是
+标准的 token-choice top-k：每个 token 选择最多 `k` 个 expert。它的优点是容量随
+token 的需要变化，但当某些 token 的 router logit 偏大时，容易出现 expert
+collapse。
+
+`expert_choice` 反过来让每个 expert 从所有有效 token 中选择固定容量的 token。容量
+设为 `ceil(k N / E)`，其中 `N` 是有效 token 数，`E` 是 expert 数；因此总的 expert
+assignment 与 token-choice top-k 接近，但每个 expert 的 hard load 在结构上均匀。未
+被任何 expert 选中的 token 仍经过 shared expert，选中的 expert 输出按 router logit
+做 token-wise 聚合，最后写回原位置：
+
+\[
+  y_i = x_i + W_o\left(f_{shared}(h_i) +
+  \sum_{e\in A_i} \operatorname{softmax}_{e\in A_i}(r_{ie})f_e(h_i)\right).
+\]
+
+这里的 `A_i` 不是固定频带，也不是 slot，而是由当前内容、坐标和全局上下文条件
+动态产生的 expert 集合。该变体用于检验“expert 主动寻找局部高频模式”是否比
+“token 竞争 expert”更稳定；它仍支持任意 token、coords 和 mask，不要求规则 FFT
+网格。`--learnable-moe-routing expert_choice` 可打开该对照。
+
+另一个行业中常见的稳定化方法是 noisy top-k gating：训练时在 router logit 上加入
+小幅噪声，让早期尚未被选中的 expert 获得探索机会，测试时关闭噪声。对于
+DeepSeekMoE 风格的 fine-grained specialization，则把 routed expert 切成更多小
+expert，同时保留多个 shared expert 表达所有 token 都需要的公共变换。当前接口用
+`--learnable-moe-router-noise` 和 `--learnable-moe-shared-experts` 暴露这两个变量，
+仍然只产生 token-wise residual，不改变 latent token 数量或位置对应关系。
+
 ### 对“用 MoE 处理高、中、低频”的直接回答
 
 可以使用 MoE，而且它比单一 FFT backbone 更适合表达 NS 中不同空间尺度的局部差异，
@@ -335,6 +365,8 @@ passing 或 token attention 可直接接收 `(value, coordinate, mask)`，不要
 | global-low MoE | 低频长程专家能降低背景误差 | FNO/Transolver/CNextU 三者均不能显著退化 |
 | learnable token MoE top-2 | 内容/坐标条件路由比固定频带更适合 latent | static、三算子 rollout 和 arbitrary-token smoke test |
 | learnable token MoE top-1/8 experts | 稀疏度与专家容量的 trade-off | 与 top-2/4 配对比较 |
+| expert-choice token MoE | 固定 expert 容量抑制 token-choice collapse | 与 8-expert/top-2 配对比较 static、routing 和 rollout |
+| noisy top-k / fine-grained shared MoE | 训练探索和 shared capacity 改善专家专门化 | 8-expert noisy 与 16-expert/4-route/2-shared 配对比较 |
 
 最终保留标准不是单一 `valid rel-L2`：候选必须同时报告 low/high-band reconstruction、
 高频泄漏、FNO/Transolver/CNextU latent rollout，以及解码后的 physical rollout。
@@ -366,7 +398,7 @@ passing 或 token attention 可直接接收 `(value, coordinate, mask)`，不要
 
 在已有 FFT/local cross-band 与 token-MoE 之外，优先级如下：
 
-1. 用 `learnable token MoE` 比较不同初始化、top-1/top-2、专家数和 routing balance，
+1. 用 `learnable token MoE` 比较 token-choice/expert-choice、不同初始化、top-1/top-2、专家数和 routing balance，
    同时记录 expert importance/load，检查高频区域是否真的被单独路由，而不是所有 token
    塌缩到同一 expert。
 2. 加入 nested global/local 路径：global context 只提供低频和长程条件，local token

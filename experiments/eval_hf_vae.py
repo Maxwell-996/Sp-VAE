@@ -52,6 +52,9 @@ def build_from_ckpt(path: str, device: torch.device) -> tuple[WanVAEHF, dict]:
         learnable_moe_experts=a.get("learnable_moe_experts", 4),
         learnable_moe_top_k=a.get("learnable_moe_top_k", 2),
         learnable_moe_global=a.get("learnable_moe_global", False),
+        learnable_moe_routing=a.get("learnable_moe_routing", "token_choice"),
+        learnable_moe_shared_experts=a.get("learnable_moe_shared_experts", 1),
+        learnable_moe_router_noise=a.get("learnable_moe_router_noise", 0.0),
         output_band_moe=a.get("output_band_moe", False),
     ).to(device)
     missing, unexpected = model.load_state_dict(ck["model"], strict=False)

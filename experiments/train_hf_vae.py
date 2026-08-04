@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -19,6 +22,24 @@ if str(PROJECT_ROOT) not in sys.path:
 from hfvae.losses import HFVAELossConfig, compute_vae_loss
 from hfvae.ns_data import NSShardDataset, ShardContiguousSampler, resolve_data_root, resize_video
 from hfvae.wan22_hf_vae import WanVAEHF
+
+
+class _LossModule(torch.nn.Module):
+    """Expose the VAE loss through forward so DDP can synchronize gradients."""
+
+    def __init__(self, model: WanVAEHF, loss_cfg: HFVAELossConfig, noise: float):
+        super().__init__()
+        self.model = model
+        self.loss_cfg = loss_cfg
+        self.noise = noise
+
+    def forward(self, x: torch.Tensor):
+        return compute_vae_loss(
+            self.model,
+            x,
+            self.loss_cfg,
+            latent_consistency_noise=self.noise,
+        )
 
 
 def build_model(args) -> WanVAEHF:
@@ -51,6 +72,9 @@ def build_model(args) -> WanVAEHF:
         learnable_moe_experts=args.learnable_moe_experts,
         learnable_moe_top_k=args.learnable_moe_top_k,
         learnable_moe_global=args.learnable_moe_global,
+        learnable_moe_routing=args.learnable_moe_routing,
+        learnable_moe_shared_experts=args.learnable_moe_shared_experts,
+        learnable_moe_router_noise=args.learnable_moe_router_noise,
         output_band_moe=args.output_band_moe,
     )
 
@@ -60,7 +84,7 @@ def rel_l2(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
 
 
 @torch.no_grad()
-def validate(model, loader, args, device) -> float:
+def validate(model, loader, args, device, distributed: bool) -> float:
     model.eval()
     total = 0.0
     count = 0
@@ -74,7 +98,11 @@ def validate(model, loader, args, device) -> float:
         count += x.size(0)
         if args.val_batches and count >= args.val_batches * args.batch:
             break
-    return total / max(count, 1)
+    if distributed:
+        totals = torch.tensor([total, count], device=device, dtype=torch.float64)
+        dist.all_reduce(totals, op=dist.ReduceOp.SUM)
+        total, count = totals.tolist()
+    return total / max(count, 1.0)
 
 
 def main() -> None:
@@ -126,6 +154,13 @@ def main() -> None:
     ap.add_argument("--learnable-moe-experts", type=int, default=4)
     ap.add_argument("--learnable-moe-top-k", type=int, default=2)
     ap.add_argument("--learnable-moe-global", action="store_true")
+    ap.add_argument(
+        "--learnable-moe-routing",
+        choices=["token_choice", "expert_choice"],
+        default="token_choice",
+    )
+    ap.add_argument("--learnable-moe-shared-experts", type=int, default=1)
+    ap.add_argument("--learnable-moe-router-noise", type=float, default=0.0)
     ap.add_argument("--output-band-moe", action="store_true")
 
     # Objective knobs.
@@ -148,11 +183,21 @@ def main() -> None:
     ap.add_argument("--consistency-noise", type=float, default=0.05)
     args = ap.parse_args()
 
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    distributed = world_size > 1
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    if distributed:
+        if not torch.cuda.is_available():
+            raise RuntimeError("torchrun multi-GPU training requires CUDA")
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend="nccl")
+
     data_root = resolve_data_root(args.data_root)
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda", local_rank) if torch.cuda.is_available() else torch.device("cpu")
     train_ds = NSShardDataset(
         data_root,
         "train",
@@ -170,11 +215,21 @@ def main() -> None:
         max_shards=args.max_shards,
         max_samples_per_shard=args.max_samples_per_shard,
     )
+    train_sampler = (
+        DistributedSampler(train_ds, num_replicas=world_size, rank=rank, shuffle=True)
+        if distributed
+        else (ShardContiguousSampler(train_ds, shuffle=True) if args.lazy else None)
+    )
+    valid_sampler = (
+        DistributedSampler(valid_ds, num_replicas=world_size, rank=rank, shuffle=False)
+        if distributed
+        else ShardContiguousSampler(valid_ds, shuffle=False)
+    )
     train_dl = DataLoader(
         train_ds,
         batch_size=args.batch,
-        sampler=ShardContiguousSampler(train_ds, shuffle=True) if args.lazy else None,
-        shuffle=not args.lazy,
+        sampler=train_sampler,
+        shuffle=(not args.lazy and not distributed),
         num_workers=0 if args.lazy else 4,
         drop_last=True,
         pin_memory=True,
@@ -182,7 +237,7 @@ def main() -> None:
     valid_dl = DataLoader(
         valid_ds,
         batch_size=args.batch,
-        sampler=ShardContiguousSampler(valid_ds, shuffle=False),
+        sampler=valid_sampler,
         num_workers=0,
         pin_memory=True,
     )
@@ -191,16 +246,14 @@ def main() -> None:
     if args.init_from:
         ck = torch.load(args.init_from, map_location="cpu", weights_only=False)
         missing, unexpected = model.load_state_dict(ck["model"], strict=False)
-        print(
-            f"initialized from {args.init_from}: "
-            f"missing={len(missing)} unexpected={len(unexpected)}"
-        )
+        if rank == 0:
+            print(
+                f"initialized from {args.init_from}: "
+                f"missing={len(missing)} unexpected={len(unexpected)}"
+            )
     if args.resume:
         ck = torch.load(args.resume, map_location="cpu", weights_only=False)
         model.load_state_dict(ck["model"])
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.epochs)
-    scaler = torch.amp.GradScaler("cuda", enabled=args.amp and device.type == "cuda")
     loss_cfg = HFVAELossConfig(
         beta_kl=args.beta_kl,
         lambda_lowpass=args.lambda_lowpass,
@@ -220,18 +273,40 @@ def main() -> None:
         sobolev_s=args.sobolev_s,
     )
 
+    train_module: torch.nn.Module = _LossModule(model, loss_cfg, args.consistency_noise)
+    if distributed:
+        train_module = DDP(
+            train_module,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            broadcast_buffers=False,
+            find_unused_parameters=False,
+        )
+    opt = torch.optim.AdamW(train_module.parameters(), lr=args.lr, weight_decay=1e-4)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.epochs)
+    scaler = torch.amp.GradScaler("cuda", enabled=args.amp and device.type == "cuda")
+
     meta = {
         "args": vars(args),
         "data_root": str(data_root),
         "norm_mean": train_ds.mean,
         "norm_std": train_ds.std,
     }
-    (out_dir / f"{args.tag}_config.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    if rank == 0:
+        (out_dir / f"{args.tag}_config.json").write_text(
+            json.dumps(meta, indent=2), encoding="utf-8"
+        )
 
     best = float("inf")
-    print(f"data={data_root} train={len(train_ds)} valid={len(valid_ds)} device={device}")
-    print(f"model params={sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
+    if rank == 0:
+        print(
+            f"data={data_root} train={len(train_ds)} valid={len(valid_ds)} "
+            f"device={device} world_size={world_size}"
+        )
+        print(f"model params={sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
     for ep in range(args.epochs):
+        if distributed:
+            train_sampler.set_epoch(ep)
         model.train()
         t0 = time.time()
         sums: dict[str, float] = {}
@@ -240,12 +315,7 @@ def main() -> None:
             x = resize_video(x.to(device, non_blocking=True), args.out_hw, args.out_t)
             opt.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=args.amp and device.type == "cuda"):
-                loss, parts = compute_vae_loss(
-                    model,
-                    x,
-                    loss_cfg,
-                    latent_consistency_noise=args.consistency_noise,
-                )
+                loss, parts = train_module(x)
             scaler.scale(loss).backward()
             scaler.unscale_(opt)
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -255,11 +325,24 @@ def main() -> None:
             for k, v in parts.items():
                 sums[k] = sums.get(k, 0.0) + v * x.size(0)
             n += x.size(0)
+        if distributed:
+            total_n = torch.tensor(float(n), device=device, dtype=torch.float64)
+            dist.all_reduce(total_n, op=dist.ReduceOp.SUM)
+            n = int(total_n.item())
+            for key in sums:
+                value = torch.tensor(sums[key], device=device, dtype=torch.float64)
+                dist.all_reduce(value, op=dist.ReduceOp.SUM)
+                sums[key] = float(value.item())
         sched.step()
-        val = validate(model, valid_dl, args, device)
+        val = validate(model, valid_dl, args, device, distributed)
         msg = " ".join(f"{k}={sums[k] / max(n, 1):.4g}" for k in sorted(sums))
-        print(f"ep {ep:03d} {msg} val_rel_l2={val:.5f} time={time.time() - t0:.1f}s", flush=True)
-        if val < best:
+        if rank == 0:
+            print(
+                f"ep {ep:03d} {msg} val_rel_l2={val:.5f} "
+                f"time={time.time() - t0:.1f}s",
+                flush=True,
+            )
+        if rank == 0 and val < best:
             best = val
             ckpt = {
                 "model": model.state_dict(),
@@ -269,7 +352,11 @@ def main() -> None:
                 "val": best,
             }
             torch.save(ckpt, out_dir / f"{args.tag}_best.pt")
-    print(f"done best_val={best:.5f} ckpt={out_dir / f'{args.tag}_best.pt'}")
+    if distributed:
+        dist.barrier()
+        dist.destroy_process_group()
+    if rank == 0:
+        print(f"done best_val={best:.5f} ckpt={out_dir / f'{args.tag}_best.pt'}")
 
 
 if __name__ == "__main__":

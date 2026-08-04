@@ -445,6 +445,39 @@ internal MoE 作为 FNO/CNextU 候选，Transolver 仍使用 output-only 配置�
 MoE 的计算代价也明显更高，尤其 CNextU 的高通道 bottleneck stage；后续应测试只在
 decoder 或低分辨率 stage 路由的容量折中。
 
+stage 选择消融保持其他配置不变。FNO/Transolver 的 hidden block 仍全部加入 MoE，
+只有 CNextU 改变注入范围：
+
+| CNextU scope | latent test rollout | decoded physical rollout |
+| --- | ---: | ---: |
+| output MoE only | 0.229911 | 0.181926 |
+| decoder only | 0.207422 | 0.170765 |
+| neck + decoder | 0.201734 | 0.165751 |
+| all encoder/neck/decoder | not separately retained | **0.158129** |
+
+`neck + decoder` 已经优于 decoder-only，但仍不及全层注入；它是计算量和效果之间
+的可用折中。上表中 all scope 的 CNextU latent rollout 未在早期日志中单独保存，
+因此不填入未经直接记录的数值，physical 数值仍来自完整 test 评估。
+
+### Operator-level routing 消融
+
+在同一 `hf_ddp_global8` latent、seed=3407、30 epoch、8 experts、top-2、2 shared
+experts、global context 和 all-stage internal MoE 配置下，只把路由从
+`token_choice` 改为 `expert_choice`。后者让每个 expert 选择固定容量的 token，未被
+选中的 token 仍经过 shared expert：
+
+| routing | FNO physical | Transolver physical | CNextU physical | mean |
+| --- | ---: | ---: | ---: | ---: |
+| token-choice | **0.166324** | 0.378130 | **0.158129** | **0.234194** |
+| expert-choice | 0.189372 | **0.365875** | 0.167789 | 0.241012 |
+
+expert-choice 相比 output-only baseline 的 mean `0.243579` 仍有小幅改善，但比
+token-choice hidden MoE 的 `0.234194` 差 `2.91%`。它只改善了 Transolver，FNO 和
+CNextU 均退化，说明固定 expert 容量不是当前规则网格 NS latent 的通用高频先验。
+当前保留 `token_choice` 作为默认；`--operator-moe-routing expert_choice` 仅作为
+可学习路由的架构消融。该结果也支持“专家职责应由内容和坐标学习”，但不支持把
+expert-choice 本身当作更强的高频机制。
+
 训练和评估代码对旧 checkpoint 做了兼容处理：`operator_moe` 与
 `operator_internal_moe` 是两个独立结构标志，读取缺少新字段的旧 checkpoint 时只
 重建 output adapter，不会凭 `operator_moe` 误加 hidden adapters。

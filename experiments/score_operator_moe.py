@@ -26,6 +26,11 @@ def main() -> None:
         choices=["all", "decoder", "neck_decoder"],
         default="all",
     )
+    ap.add_argument(
+        "--operator-moe-routing",
+        choices=["token_choice", "expert_choice"],
+        default="token_choice",
+    )
     ap.add_argument("--master-port", type=int, default=29943)
     args = ap.parse_args()
 
@@ -90,6 +95,8 @@ def main() -> None:
         "--operator-moe-top-k",
         "2",
         "--operator-moe-global",
+        "--operator-moe-routing",
+        args.operator_moe_routing,
         "--operator-moe-shared-experts",
         "2",
     ]

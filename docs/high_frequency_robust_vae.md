@@ -395,6 +395,7 @@ MoE 和非零 residual 初始化都没有优于保留配置；失败 trial 已�
 | fine16 / top-4 / 2-shared | 0.07206 | 1.37e-5 | 0.25665 | 0.60122 | 0.24019 |
 | dense soft8 | 0.05977 | 1.28e-5 | 0.24641 | 0.58025 | 0.25389 |
 | global + dense4 / 2-shared | 0.06475 | 1.42e-5 | 0.24790 | **0.57338** | **0.22609** |
+| global + dense8 / 2-shared | **0.05768** | **1.23e-5** | 0.24922 | 0.57629 | 0.24017 |
 
 解码到物理场后的 test rollout 为：
 
@@ -404,13 +405,14 @@ MoE 和非零 residual 初始化都没有优于保留配置；失败 trial 已�
 | fine16 / top-4 / 2-shared | 0.19728 | 0.42003 | 0.20201 |
 | dense soft8 | **0.18063** | **0.39480** | 0.20957 |
 | global + dense4 / 2-shared | 0.18277 | 0.39516 | 0.18205 |
+| global + dense8 / 2-shared | **0.17728** | **0.38789** | 0.19317 |
 
 global 配置的 valid routing load 是严格均匀的 `0.25`，但 importance 为
 `[0.385, 0.163, 0.344, 0.107]`，temperature 收敛到 `0.5007`。这说明 dense
 MoE 的 hard load 均匀不等于专家功能相同；重要性仍出现内容条件的分工。完整结果的
-结论是：global/shared 路径使 Transolver 接近 dense soft8，并优于 dense/fine 的
-CNextU physical rollout，但 noisy8 仍是 CNextU 的最低值；dense soft8 仍是
-FNO/Transolver 的最佳 physical 结果。因此当前没有“对所有
+结论是：global+dense8 进一步把 FNO/Transolver physical rollout 降到当前矩阵最低，
+但它的 latent rollout 并没有同步变好，CNextU 也退化到 `0.19317`；noisy8 仍是
+CNextU 的最低 physical 值。因此当前没有“对所有
 operator 都占优”的单一 VAE，必须按目标下游模型选择配置。
 
 ## 参考依据

@@ -140,7 +140,10 @@ class LearnableTokenMoE(nn.Module):
             nn.Linear(hidden, hidden),
             nn.GELU(),
         )
-        self.router = nn.Linear(hidden * 2, num_experts)
+        self.router = nn.Sequential(
+            nn.LayerNorm(hidden * 2),
+            nn.Linear(hidden * 2, num_experts),
+        )
         self.experts = nn.ModuleList(
             [_Expert(hidden, expansion=expansion) for _ in range(num_experts)]
         )

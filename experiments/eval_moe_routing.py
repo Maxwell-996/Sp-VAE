@@ -52,6 +52,7 @@ def main() -> None:
     )
     importance = torch.zeros(moe.num_experts, dtype=torch.float64)
     load = torch.zeros_like(importance)
+    global_gate = 0.0
     count = 0
     model.eval()
     for bi, x in enumerate(dl):
@@ -61,6 +62,7 @@ def main() -> None:
         stats = moe.routing_stats()
         importance += torch.tensor(stats["importance"], dtype=torch.float64)
         load += torch.tensor(stats["load"], dtype=torch.float64)
+        global_gate += float(stats.get("global_gate", [0.0])[0])
         count += 1
         if args.max_batches and bi + 1 >= args.max_batches:
             break
@@ -71,6 +73,7 @@ def main() -> None:
         "importance": (importance / max(count, 1)).tolist(),
         "load": (load / max(count, 1)).tolist(),
         "temperature": float(moe.log_temperature.exp().detach().cpu()),
+        "global_gate": global_gate / max(count, 1),
     }
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

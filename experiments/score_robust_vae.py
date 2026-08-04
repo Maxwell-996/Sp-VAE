@@ -128,6 +128,12 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
             ]
             if args.moe_global:
                 moe_args.append("--learnable-moe-global")
+            if args.moe_adaptive_global:
+                moe_args.append("--learnable-moe-adaptive-global")
+            if args.moe_router_inhibition:
+                moe_args.append("--learnable-moe-router-inhibition")
+            if args.moe_local_context:
+                moe_args.append("--learnable-moe-local-context")
             train_args.extend(moe_args)
     else:
         train_args.extend(
@@ -266,6 +272,21 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Enable the mask-aware global expert context path.",
+    )
+    parser.add_argument(
+        "--moe-adaptive-global",
+        action="store_true",
+        help="Learn a per-token mixture between global and routed experts.",
+    )
+    parser.add_argument(
+        "--moe-router-inhibition",
+        action="store_true",
+        help="Route on token features after subtracting the pooled common signal.",
+    )
+    parser.add_argument(
+        "--moe-local-context",
+        action="store_true",
+        help="Use learnable-radius coordinate neighborhoods for token experts.",
     )
     parser.add_argument("--lambda-moe-balance", type=float, default=0.01)
     args = parser.parse_args()

@@ -105,6 +105,9 @@ class LearnableTokenMoE(nn.Module):
         top_k: int = 2,
         expansion: int = 2,
         global_context: bool = False,
+        adaptive_global: bool = False,
+        router_inhibition: bool = False,
+        local_context: bool = False,
         routing: str = "token_choice",
         shared_experts: int = 1,
         router_noise_std: float = 0.0,
@@ -130,6 +133,9 @@ class LearnableTokenMoE(nn.Module):
         self.shared_experts = int(shared_experts)
         self.router_noise_std = float(router_noise_std)
         self.global_context_enabled = bool(global_context)
+        self.adaptive_global = bool(adaptive_global)
+        self.router_inhibition = bool(router_inhibition)
+        self.local_context_enabled = bool(local_context)
         self.input = nn.Sequential(
             nn.LayerNorm(channels + 3),
             nn.Linear(channels + 3, hidden),
@@ -152,11 +158,42 @@ class LearnableTokenMoE(nn.Module):
             [_Expert(hidden, expansion=expansion) for _ in range(shared_experts - 1)]
         )
         self.global_expert = _Expert(hidden, expansion=expansion) if global_context else None
+        self.global_gate = (
+            nn.Sequential(
+                nn.LayerNorm(hidden * 2),
+                nn.Linear(hidden * 2, 1),
+            )
+            if global_context and adaptive_global
+            else None
+        )
+        if self.global_gate is not None:
+            nn.init.zeros_(self.global_gate[-1].weight)
+            nn.init.zeros_(self.global_gate[-1].bias)
+        self.local_log_scales = (
+            nn.Parameter(torch.log(torch.tensor([0.05, 0.15, 0.40])))
+            if local_context
+            else None
+        )
+        self.local_router = (
+            nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, hidden))
+            if local_context
+            else None
+        )
+        self.local_expert = (
+            nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, hidden))
+            if local_context
+            else None
+        )
+        for adapter in (self.local_router, self.local_expert):
+            if adapter is not None:
+                nn.init.zeros_(adapter[-1].weight)
+                nn.init.zeros_(adapter[-1].bias)
         self.output = nn.Linear(hidden, channels)
         nn.init.zeros_(self.output.weight)
         nn.init.zeros_(self.output.bias)
         self.log_temperature = nn.Parameter(torch.tensor(math.log(0.5)))
         self._balance_loss = torch.zeros(())
+        self._last_global_gate = 0.5
         self.register_buffer(
             "last_importance", torch.full((num_experts,), 1.0 / num_experts)
         )
@@ -200,7 +237,31 @@ class LearnableTokenMoE(nn.Module):
             "importance": self.last_importance.detach().cpu().tolist(),
             "load": self.last_load.detach().cpu().tolist(),
             "temperature": [float(self.log_temperature.exp().detach().cpu())],
+            "global_gate": [float(self._last_global_gate)],
+            "local_scales": (
+                self.local_log_scales.detach().exp().cpu().tolist()
+                if self.local_log_scales is not None
+                else []
+            ),
         }
+
+    def _local_delta(
+        self,
+        features: torch.Tensor,
+        coords: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Aggregate learnable-radius coordinate neighborhoods without reshaping."""
+        coords_f = coords.float()
+        distance2 = torch.cdist(coords_f, coords_f).square()
+        pair_valid = (mask[:, :, None] & mask[:, None, :]).unsqueeze(1)
+        scales = self.local_log_scales.exp().clamp(1e-3, 2.0)
+        weights = torch.exp(
+            -distance2.unsqueeze(1) / (2.0 * scales[None, :, None, None].square())
+        ) * pair_valid
+        weights = weights / weights.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+        neighborhood = torch.einsum("bsij,bjh->bsih", weights, features.float())
+        return (neighborhood - features.float().unsqueeze(1)).mean(dim=1).to(features.dtype)
 
     def forward(
         self,
@@ -221,7 +282,24 @@ class LearnableTokenMoE(nn.Module):
         denom = valid.sum(dim=1, keepdim=True).clamp_min(1.0)
         pooled = (features * valid).sum(dim=1, keepdim=True) / denom
         pooled = self.context(pooled)
-        routed = torch.cat((features, pooled.expand(-1, n, -1)), dim=-1)
+        pooled_tokens = pooled.expand(-1, n, -1)
+        local_delta = (
+            self._local_delta(features, coords, mask)
+            if self.local_context_enabled
+            else None
+        )
+        expert_features = (
+            features + self.local_expert(local_delta)
+            if local_delta is not None and self.local_expert is not None
+            else features
+        )
+        router_features = (
+            features + self.local_router(local_delta)
+            if local_delta is not None and self.local_router is not None
+            else features
+        )
+        router_local = router_features - pooled_tokens if self.router_inhibition else router_features
+        routed = torch.cat((router_local, pooled_tokens), dim=-1)
         temperature = self.log_temperature.exp().clamp(0.25, 4.0)
         logits = self.router(routed) / temperature
         if self.training and self.router_noise_std:
@@ -264,14 +342,20 @@ class LearnableTokenMoE(nn.Module):
                 selection.fill_(1.0)
                 gates = dense_gates
 
-        expert_values = torch.stack([expert(features) for expert in self.experts], dim=2)
+        expert_values = torch.stack([expert(expert_features) for expert in self.experts], dim=2)
         routed_value = torch.einsum("bne,bneh->bnh", gates, expert_values)
-        shared_values = [self.shared(features)]
-        shared_values.extend(expert(features) for expert in self.shared_extra)
+        shared_values = [self.shared(expert_features)]
+        shared_values.extend(expert(expert_features) for expert in self.shared_extra)
         shared_value = torch.stack(shared_values, dim=2).mean(dim=2)
         mixed = shared_value + routed_value
         if self.global_expert is not None:
-            mixed = mixed + self.global_expert(pooled).expand(-1, n, -1)
+            global_value = self.global_expert(pooled).expand(-1, n, -1)
+            if self.global_gate is not None:
+                global_gate = torch.sigmoid(self.global_gate(routed))
+                mixed = shared_value + (1.0 - global_gate) * routed_value + global_gate * global_value
+                self._last_global_gate = float((global_gate * valid).sum().detach() / valid.sum().clamp_min(1.0))
+            else:
+                mixed = mixed + global_value
         delta = self.output(mixed) * valid
 
         importance = dense_gates.sum(dim=(0, 1)) / valid.sum().clamp_min(1.0)

@@ -369,6 +369,8 @@ passing 或 token attention 可直接接收 `(value, coordinate, mask)`，不要
 | expert-choice token MoE | 固定 expert 容量抑制 token-choice collapse | 与 8-expert/top-2 配对比较 static、routing 和 rollout |
 | noisy top-k / fine-grained shared MoE | 训练探索和 shared capacity 改善专家专门化 | 8-expert noisy 与 16-expert/4-route/2-shared 配对比较 |
 | global + dense shared token MoE | 全局背景条件调制局部专家，同时保留 token 对应关系 | 4-expert dense/global/2-shared 的完整四卡确认 |
+| adaptive global/local token MoE | 每个 token 学习在 global expert 与 routed local experts 之间分配容量 | 与 global+dense8 的完整四卡配对，不接受 static 或 rollout 退化 |
+| router inhibition | 从 token router 输入中减去 pooled common signal，促进局部专家分工 | tiny benchmark 先筛选，再决定是否 full-scale |
 
 最终保留标准不是单一 `valid rel-L2`：候选必须同时报告 low/high-band reconstruction、
 高频泄漏、FNO/Transolver/CNextU latent rollout，以及解码后的 physical rollout。
@@ -396,6 +398,7 @@ MoE 和非零 residual 初始化都没有优于保留配置；失败 trial 已�
 | dense soft8 | 0.05977 | 1.28e-5 | 0.24641 | 0.58025 | 0.25389 |
 | global + dense4 / 2-shared | 0.06475 | 1.42e-5 | 0.24790 | **0.57338** | **0.22609** |
 | global + dense8 / 2-shared | **0.05768** | **1.23e-5** | 0.24922 | 0.57629 | 0.24017 |
+| adaptive global/local + dense8 / 2-shared | 0.06796 | 1.27e-5 | 0.26151 | 0.59390 | 0.23949 |
 
 解码到物理场后的 test rollout 为：
 
@@ -406,6 +409,7 @@ MoE 和非零 residual 初始化都没有优于保留配置；失败 trial 已�
 | dense soft8 | **0.18063** | **0.39480** | 0.20957 |
 | global + dense4 / 2-shared | 0.18277 | 0.39516 | 0.18205 |
 | global + dense8 / 2-shared | **0.17728** | **0.38789** | 0.19317 |
+| adaptive global/local + dense8 / 2-shared | 0.19485 | 0.41497 | 0.19483 |
 
 global 配置的 valid routing load 是严格均匀的 `0.25`，但 importance 为
 `[0.385, 0.163, 0.344, 0.107]`，temperature 收敛到 `0.5007`。这说明 dense
@@ -414,6 +418,25 @@ MoE 的 hard load 均匀不等于专家功能相同；重要性仍出现内容�
 但它的 latent rollout 并没有同步变好，CNextU 也退化到 `0.19317`；noisy8 仍是
 CNextU 的最低 physical 值。因此当前没有“对所有
 operator 都占优”的单一 VAE，必须按目标下游模型选择配置。
+
+### Adaptive global/local 失败假设
+
+受 SPAR/U-HNO 中按空间位置学习 global Fourier branch 与 local multi-scale
+branch 分配的启发，新增了一个不改变 token 数量和位置的 gate：
+`g_i=sigmoid(G([h_i, pooled(h)]))`，并令 routed/global 两个分支做 token-wise
+凸组合。gate 和 output residual 都从零初始化，旧 checkpoint 可以部分加载。该设计
+在 tiny benchmark 上与 global+dense4 基线几乎持平（`1.0009075` 对 `1.0009013`），
+但在完整四卡训练中 valid rel-L2 从 `0.05768` 退化到 `0.06830`，FNO、Transolver、
+CNextU 的 latent rollout 和 decoded physical rollout 均退化。训练后 routing
+importance 为 `[0.0647, 0.2410, 0.1459, 0.1442, 0.2947, 0.0563, 0.0305, 0.0227]`，
+hard load 仍为均匀 `0.125`，global gate 平均值为 `0.4930`；这说明 gate/importance 的内容条件分化没有自动转化为
+更好的高频表示，当前不应将 adaptive global/local 作为主线配置。
+
+随后测试了 Neural Inhibition 风格的 router：用 `features-pooled(features)` 作为
+局部分支的路由输入，同时保留 pooled context 供 router 使用。tiny benchmark 得到
+`robust_val_rel_l2=1.0008997`，相同基线为 `1.0009013`，但 best validation 完全相同，
+收益只有 `1.6e-6`，低于当前 tiny 实验的可辨识范围。因此该实现保留为下一轮候选，
+暂不进行昂贵的四卡 full-scale 训练。
 
 ## 参考依据
 
@@ -435,6 +458,8 @@ operator 都占优”的单一 VAE，必须按目标下游模型选择配置。
 - [Expert Choice Routing](https://arxiv.org/abs/2202.09368): 由 expert 选择固定容量 token，避免 token-choice 的容量竞争。
 - [DeepSeekMoE](https://arxiv.org/abs/2401.06066): fine-grained routed experts 加 shared experts，提升组合式专家专门化。
 - [NESTOR](https://arxiv.org/abs/2602.22059): 以 shared/global/local 层级构造 nested MoE neural operator。
+- [U-HNO / SPAR](https://arxiv.org/abs/2605.12965): 学习每个位置在 global Fourier 与 local multi-scale Gaussian 分支之间的分配，是 adaptive global/local 实验的直接动机。
+- [Neural Inhibition](https://arxiv.org/abs/2507.03221): 通过抑制 router 中跨模式共享的公共信号促进 expert specialization，可作为下一轮路由正则化候选。
 - [ABLE](https://arxiv.org/abs/2605.10451): 学习数据相关的 Parseval frame，说明固定 Fourier basis 的限制可以从“学习基底”而不只是“增加 modes”来缓解。
 - [SFO](https://arxiv.org/abs/2601.17090): 用 Universal Spectral Basis 做谱滤波，强调适配 kernel 结构的基底比盲目扩大 Fourier 截断更重要。
 - [GITO](https://arxiv.org/abs/2506.13906): 将图局部关系、Transformer 长程依赖和任意 query location 结合，适合作为 irregular branch 的 operator 对照。

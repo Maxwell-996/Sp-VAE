@@ -72,6 +72,9 @@ def build_model(args) -> WanVAEHF:
         learnable_moe_experts=args.learnable_moe_experts,
         learnable_moe_top_k=args.learnable_moe_top_k,
         learnable_moe_global=args.learnable_moe_global,
+        learnable_moe_adaptive_global=args.learnable_moe_adaptive_global,
+        learnable_moe_router_inhibition=args.learnable_moe_router_inhibition,
+        learnable_moe_local_context=args.learnable_moe_local_context,
         learnable_moe_routing=args.learnable_moe_routing,
         learnable_moe_shared_experts=args.learnable_moe_shared_experts,
         learnable_moe_router_noise=args.learnable_moe_router_noise,
@@ -154,6 +157,9 @@ def main() -> None:
     ap.add_argument("--learnable-moe-experts", type=int, default=4)
     ap.add_argument("--learnable-moe-top-k", type=int, default=2)
     ap.add_argument("--learnable-moe-global", action="store_true")
+    ap.add_argument("--learnable-moe-adaptive-global", action="store_true")
+    ap.add_argument("--learnable-moe-router-inhibition", action="store_true")
+    ap.add_argument("--learnable-moe-local-context", action="store_true")
     ap.add_argument(
         "--learnable-moe-routing",
         choices=["token_choice", "expert_choice"],

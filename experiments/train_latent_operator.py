@@ -22,6 +22,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from hfvae.learnable_moe import LearnableTokenMoE
+
 
 def seed_all(seed: int) -> None:
     torch.manual_seed(seed)
@@ -122,11 +124,115 @@ def unwrap_model_output(y):
     return y[0] if isinstance(y, tuple) else y
 
 
+class OperatorMoEAdapter(torch.nn.Module):
+    """Zero-init routed correction on an operator's predicted latent field."""
+
+    def __init__(self, base: torch.nn.Module, channels: int, args):
+        super().__init__()
+        self.base = base
+        self.moe = LearnableTokenMoE(
+            channels,
+            hidden=args.operator_moe_hidden,
+            num_experts=args.operator_moe_experts,
+            top_k=args.operator_moe_top_k,
+            global_context=args.operator_moe_global,
+            router_inhibition=args.operator_moe_router_inhibition,
+            local_context=args.operator_moe_local_context,
+            shared_experts=args.operator_moe_shared_experts,
+            router_noise_std=args.operator_moe_router_noise,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.moe(unwrap_model_output(self.base(x)))
+
+
+class OperatorInternalMoE(torch.nn.Module):
+    """Inject zero-init token MoEs after an operator's hidden blocks."""
+
+    def __init__(self, base: torch.nn.Module, name: str, args):
+        super().__init__()
+        self.base = base
+        targets, channels = self._targets_and_channels(name, base, args)
+        self.adapters = torch.nn.ModuleList(
+            [
+                LearnableTokenMoE(
+                    channel_count,
+                    hidden=args.operator_moe_hidden,
+                    num_experts=args.operator_moe_experts,
+                    top_k=args.operator_moe_top_k,
+                    global_context=args.operator_moe_global,
+                    shared_experts=args.operator_moe_shared_experts,
+                    router_noise_std=args.operator_moe_router_noise,
+                )
+                for channel_count in channels
+            ]
+        )
+        self._hooks = [
+            module.register_forward_hook(self._make_hook(adapter))
+            for module, adapter in zip(targets, self.adapters)
+        ]
+
+    @staticmethod
+    def _targets_and_channels(name: str, base: torch.nn.Module, args):
+        if name == "fno":
+            targets = list(base.model.blocks)
+            channels = [args.hidden] * len(targets)
+        elif name == "transolver":
+            # The last block projects to the output channels, so keep MoE on
+            # the hidden token states only.
+            targets = list(base.blocks[:-1])
+            channels = [args.hidden] * len(targets)
+        elif name == "cnextu":
+            targets = list(base.encoder) + [base.neck] + list(base.decoder)
+            channels = []
+            for module in targets:
+                resample = getattr(module, "resample", None)
+                out_channels = None
+                if resample is not None:
+                    for child in resample.modules():
+                        if hasattr(child, "out_channels"):
+                            out_channels = int(child.out_channels)
+                if out_channels is None:
+                    for child in module.modules():
+                        if hasattr(child, "out_features"):
+                            out_channels = int(child.out_features)
+                if out_channels is None:
+                    raise ValueError("unable to infer CNextU stage channels")
+                channels.append(out_channels)
+        else:
+            raise ValueError(f"unknown internal-MoE operator: {name}")
+        if not targets:
+            raise ValueError(f"no internal-MoE targets found for {name}")
+        return targets, channels
+
+    @staticmethod
+    def _make_hook(adapter: LearnableTokenMoE):
+        def hook(_module, _inputs, output):
+            if isinstance(output, tuple):
+                return (adapter(output[0]), *output[1:])
+            return adapter(output)
+
+        return hook
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return unwrap_model_output(self.base(x))
+
+
+def maybe_wrap_operator(
+    model: torch.nn.Module, dim_out: int, name: str, args
+) -> torch.nn.Module:
+    if getattr(args, "operator_internal_moe", False):
+        model = OperatorInternalMoE(model, name, args)
+    if not getattr(args, "operator_moe", False):
+        return model
+    return OperatorMoEAdapter(model, dim_out, args)
+
+
 def build_model(name: str, dim_in: int, dim_out: int, h: int, w: int, args):
     import benchmark.models as models
 
     if name == "fno":
-        return models.ACTFNO(
+        model = models.ACTFNO(
             dim_in=dim_in,
             dim_out=dim_out,
             n_spatial_dims=2,
@@ -137,8 +243,9 @@ def build_model(name: str, dim_in: int, dim_out: int, h: int, w: int, args):
             gradient_checkpointing=args.grad_ckpt,
             use_act=False,
         )
+        return maybe_wrap_operator(model, dim_out, name, args)
     if name == "transolver":
-        return models.TransolverPlus(
+        model = models.TransolverPlus(
             dim_in=dim_in,
             dim_out=dim_out,
             n_spatial_dims=2,
@@ -150,8 +257,9 @@ def build_model(name: str, dim_in: int, dim_out: int, h: int, w: int, args):
             gradient_checkpointing=args.grad_ckpt,
             use_act=False,
         )
+        return maybe_wrap_operator(model, dim_out, name, args)
     if name == "cnextu":
-        return models.UNetConvNext(
+        model = models.UNetConvNext(
             dim_in=dim_in,
             dim_out=dim_out,
             n_spatial_dims=2,
@@ -162,6 +270,7 @@ def build_model(name: str, dim_in: int, dim_out: int, h: int, w: int, args):
             init_features=args.hidden,
             gradient_checkpointing=args.grad_ckpt,
         )
+        return maybe_wrap_operator(model, dim_out, name, args)
     raise ValueError(f"unknown model: {name}")
 
 
@@ -246,6 +355,16 @@ def main() -> None:
     ap.add_argument("--stages", type=int, default=3)
     ap.add_argument("--blocks-per-stage", type=int, default=1)
     ap.add_argument("--grad-ckpt", action="store_true")
+    ap.add_argument("--operator-internal-moe", action="store_true")
+    ap.add_argument("--operator-moe", action="store_true")
+    ap.add_argument("--operator-moe-hidden", type=int, default=64)
+    ap.add_argument("--operator-moe-experts", type=int, default=4)
+    ap.add_argument("--operator-moe-top-k", type=int, default=2)
+    ap.add_argument("--operator-moe-global", action="store_true")
+    ap.add_argument("--operator-moe-router-inhibition", action="store_true")
+    ap.add_argument("--operator-moe-local-context", action="store_true")
+    ap.add_argument("--operator-moe-shared-experts", type=int, default=1)
+    ap.add_argument("--operator-moe-router-noise", type=float, default=0.0)
     ap.add_argument("--max-shards", type=int, default=None)
     ap.add_argument("--max-samples-per-shard", type=int, default=None)
     ap.add_argument("--eval-batches", type=int, default=0)

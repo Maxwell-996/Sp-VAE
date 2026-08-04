@@ -283,9 +283,10 @@ y_i=x_i+W_o\left(F_{shared}(h_i)+
 
 实现位于 `hfvae/learnable_moe.py`，Wan latent 入口由
 `--latent-learnable-moe` 打开；`--output-learnable-moe` 用于 decoder-side
-对照。当前默认实验使用 4 个专家、top-2 路由和一个 shared expert。专家职责不
-预先命名为 low/mid/high，也不把 slot 作为压缩表示；它们只通过内容、坐标和有效
-采样 mask 学习数据相关的分工。
+对照。当前保留配置使用 4 个专家的 dense token routing、2 个 shared experts、
+一个 mask-aware global expert、router 输入 LayerNorm、初始 temperature `0.5`
+以及训练期 noise `0`。专家职责不预先命名为 low/mid/high，也不把 slot 作为压缩
+表示；它们只通过内容、坐标和有效采样 mask 学习数据相关的分工。
 
 ### Token-choice 与 expert-choice
 
@@ -367,11 +368,49 @@ passing 或 token attention 可直接接收 `(value, coordinate, mask)`，不要
 | learnable token MoE top-1/8 experts | 稀疏度与专家容量的 trade-off | 与 top-2/4 配对比较 |
 | expert-choice token MoE | 固定 expert 容量抑制 token-choice collapse | 与 8-expert/top-2 配对比较 static、routing 和 rollout |
 | noisy top-k / fine-grained shared MoE | 训练探索和 shared capacity 改善专家专门化 | 8-expert noisy 与 16-expert/4-route/2-shared 配对比较 |
+| global + dense shared token MoE | 全局背景条件调制局部专家，同时保留 token 对应关系 | 4-expert dense/global/2-shared 的完整四卡确认 |
 
 最终保留标准不是单一 `valid rel-L2`：候选必须同时报告 low/high-band reconstruction、
 高频泄漏、FNO/Transolver/CNextU latent rollout，以及解码后的 physical rollout。
 
 `experiments/eval_operator_physical.py` 用对应 VAE 将完整 latent rollout 解码后评估物理场误差；`runs/` 下的 checkpoints、latent caches 和 CSV/JSON 是本次实验的原始产物，均未修改 `diff_pde`。
+
+### Learnable MoE autoresearch 与 full-scale confirmation
+
+在 H20 上用固定 tiny benchmark 做了 Git-backed autoresearch。第一阶段从
+`robust_val_rel_l2=1.0091739` 开始，依次保留 global expert、两个 shared experts、
+dense 4-expert routing、关闭 router noise、router 输入 LayerNorm 和初始
+temperature `0.5`，最终为 `1.0007123`。8-expert dense、top-1/top-2/top-3、强化
+balance、sigmoid gate、coordinate embedding、router z-loss、decoder-side 第二个
+MoE 和非零 residual 初始化都没有优于保留配置；失败 trial 已由 autoresearch 回滚。
+第二阶段从保留配置重新测量，目标 `0.95`，在 6 个候选假设后没有进一步改善，run
+按 iteration limit 停止。tiny benchmark 的收益很小，因此最终选择不能只依赖该指标。
+
+随后在完整 `data_128` 上用四卡训练 1 epoch，输入 `49x128x128`、latent
+`(16,13,8,8)`，并用 30 epoch、history=4 的四卡 operator 协议验证：
+
+| VAE variant | valid rel-L2 | predicted HF energy | FNO rollout | Transolver rollout | CNextU rollout |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| noisy8 / top-2 | 0.05899 | 1.25e-5 | 0.25661 | 0.62069 | 0.22676 |
+| fine16 / top-4 / 2-shared | 0.07206 | 1.37e-5 | 0.25665 | 0.60122 | 0.24019 |
+| dense soft8 | 0.05977 | 1.28e-5 | 0.24641 | 0.58025 | 0.25389 |
+| global + dense4 / 2-shared | 0.06475 | 1.42e-5 | 0.24790 | **0.57338** | **0.22609** |
+
+解码到物理场后的 test rollout 为：
+
+| VAE variant | FNO physical | Transolver physical | CNextU physical |
+| --- | ---: | ---: | ---: |
+| noisy8 / top-2 | 0.18457 | 0.45770 | 0.18136 |
+| fine16 / top-4 / 2-shared | 0.19728 | 0.42003 | 0.20201 |
+| dense soft8 | **0.18063** | **0.39480** | 0.20957 |
+| global + dense4 / 2-shared | 0.18277 | 0.39516 | **0.18205** |
+
+global 配置的 valid routing load 是严格均匀的 `0.25`，但 importance 为
+`[0.385, 0.163, 0.344, 0.107]`，temperature 收敛到 `0.5007`。这说明 dense
+MoE 的 hard load 均匀不等于专家功能相同；重要性仍出现内容条件的分工。完整结果的
+结论是：global/shared 路径改善了 CNextU，并使 Transolver 接近 dense soft8，但
+dense soft8 仍是 FNO/Transolver 的最佳 physical 结果；因此当前没有“对所有
+operator 都占优”的单一 VAE，必须按目标下游模型选择配置。
 
 ## 参考依据
 

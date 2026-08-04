@@ -109,26 +109,26 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
             ]
         )
         if args.variant == "hf_moe":
-            train_args.extend(
-                [
-                    "--latent-learnable-moe",
-                    "--learnable-moe-hidden",
-                    str(args.moe_hidden),
-                    "--learnable-moe-experts",
-                    str(args.moe_experts),
-                    "--learnable-moe-top-k",
-                    "4",
-                    "--learnable-moe-global",
-                    "--learnable-moe-routing",
-                    args.moe_routing,
-                    "--learnable-moe-shared-experts",
-                    "2",
-                    "--learnable-moe-router-noise",
-                    "0.0",
-                    "--lambda-moe-balance",
-                    str(args.lambda_moe_balance),
-                ]
-            )
+            moe_args = [
+                "--latent-learnable-moe",
+                "--learnable-moe-hidden",
+                str(args.moe_hidden),
+                "--learnable-moe-experts",
+                str(args.moe_experts),
+                "--learnable-moe-top-k",
+                str(args.moe_top_k),
+                "--learnable-moe-routing",
+                args.moe_routing,
+                "--learnable-moe-shared-experts",
+                str(args.moe_shared_experts),
+                "--learnable-moe-router-noise",
+                str(args.moe_router_noise),
+                "--lambda-moe-balance",
+                str(args.lambda_moe_balance),
+            ]
+            if args.moe_global:
+                moe_args.append("--learnable-moe-global")
+            train_args.extend(moe_args)
     else:
         train_args.extend(
             [
@@ -255,12 +255,18 @@ def main() -> None:
     parser.add_argument("--wavelet-levels", type=int, default=2)
     parser.add_argument("--moe-hidden", type=int, default=16)
     parser.add_argument("--moe-experts", type=int, default=4)
-    parser.add_argument("--moe-top-k", type=int, default=2)
+    parser.add_argument("--moe-top-k", type=int, default=4)
     parser.add_argument(
         "--moe-routing", choices=["token_choice", "expert_choice"], default="token_choice"
     )
-    parser.add_argument("--moe-shared-experts", type=int, default=1)
+    parser.add_argument("--moe-shared-experts", type=int, default=2)
     parser.add_argument("--moe-router-noise", type=float, default=0.0)
+    parser.add_argument(
+        "--moe-global",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable the mask-aware global expert context path.",
+    )
     parser.add_argument("--lambda-moe-balance", type=float, default=0.01)
     args = parser.parse_args()
 

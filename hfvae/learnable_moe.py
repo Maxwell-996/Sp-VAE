@@ -157,7 +157,6 @@ class LearnableTokenMoE(nn.Module):
         nn.init.zeros_(self.output.bias)
         self.log_temperature = nn.Parameter(torch.tensor(math.log(0.5)))
         self._balance_loss = torch.zeros(())
-        self._router_z_loss = torch.zeros(())
         self.register_buffer(
             "last_importance", torch.full((num_experts,), 1.0 / num_experts)
         )
@@ -283,11 +282,7 @@ class LearnableTokenMoE(nn.Module):
             load = selected.sum(dim=(0, 1)) / (
                 valid.sum().clamp_min(1.0) * self.top_k
             )
-        self._router_z_loss = (
-            torch.logsumexp(logits, dim=-1).square() * valid.squeeze(-1)
-        ).sum() / valid.sum().clamp_min(1.0)
         self._balance_loss = self.num_experts * (importance * load).sum()
-        self._balance_loss = self._balance_loss + 1e-3 * self._router_z_loss
         self.last_importance.copy_(importance.detach())
         self.last_load.copy_(load.detach())
         return _restore(tokens + delta, meta)

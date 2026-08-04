@@ -403,13 +403,14 @@ MoE 和非零 residual 初始化都没有优于保留配置；失败 trial 已�
 | noisy8 / top-2 | 0.18457 | 0.45770 | 0.18136 |
 | fine16 / top-4 / 2-shared | 0.19728 | 0.42003 | 0.20201 |
 | dense soft8 | **0.18063** | **0.39480** | 0.20957 |
-| global + dense4 / 2-shared | 0.18277 | 0.39516 | **0.18205** |
+| global + dense4 / 2-shared | 0.18277 | 0.39516 | 0.18205 |
 
 global 配置的 valid routing load 是严格均匀的 `0.25`，但 importance 为
 `[0.385, 0.163, 0.344, 0.107]`，temperature 收敛到 `0.5007`。这说明 dense
 MoE 的 hard load 均匀不等于专家功能相同；重要性仍出现内容条件的分工。完整结果的
-结论是：global/shared 路径改善了 CNextU，并使 Transolver 接近 dense soft8，但
-dense soft8 仍是 FNO/Transolver 的最佳 physical 结果；因此当前没有“对所有
+结论是：global/shared 路径使 Transolver 接近 dense soft8，并优于 dense/fine 的
+CNextU physical rollout，但 noisy8 仍是 CNextU 的最低值；dense soft8 仍是
+FNO/Transolver 的最佳 physical 结果。因此当前没有“对所有
 operator 都占优”的单一 VAE，必须按目标下游模型选择配置。
 
 ## 参考依据

@@ -226,7 +226,15 @@ class LearnableTokenMoE(nn.Module):
         # Keep a dense probability path for the auxiliary loss. In particular,
         # top-1 routing otherwise turns importance into a non-differentiable
         # one-hot tensor and makes load balancing ineffective.
-        dense_gates = torch.softmax(logits, dim=-1) * valid
+        if self.top_k == self.num_experts:
+            # Independent sigmoid scores avoid forcing every expert into a
+            # zero-sum competition when dense routing is selected. Normalize
+            # only after the experts have expressed their affinities.
+            dense_gates = torch.sigmoid(logits)
+            dense_gates = dense_gates / dense_gates.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+            dense_gates = dense_gates * valid
+        else:
+            dense_gates = torch.softmax(logits, dim=-1) * valid
         selection = torch.zeros_like(logits)
         if self.routing == "expert_choice":
             # Equal expert capacity removes token-side winner-take-all

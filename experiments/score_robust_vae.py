@@ -117,7 +117,7 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
                     "--learnable-moe-experts",
                     str(args.moe_experts),
                     "--learnable-moe-top-k",
-                    "2",
+                    "4",
                     "--learnable-moe-global",
                     "--learnable-moe-routing",
                     args.moe_routing,

@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -16,14 +17,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out-root", required=True)
+    ap.add_argument("--out-root", default=None)
     ap.add_argument("--latent-root", default="runs/latents_hf_ddp_global8")
     ap.add_argument("--vae-ckpt", default="runs/hf_ddp_global8/hf_ddp_global8_best.pt")
     ap.add_argument("--master-port", type=int, default=29943)
     args = ap.parse_args()
 
-    out_root = Path(args.out_root).resolve()
-    if out_root.exists():
+    out_root = (
+        Path(args.out_root).resolve()
+        if args.out_root is not None
+        else Path(tempfile.mkdtemp(prefix="hfvae-operator-score-"))
+    )
+    if args.out_root is not None and out_root.exists():
         raise FileExistsError(f"score output already exists: {out_root}")
     operator_root = out_root / "operator"
     physical_root = out_root / "physical"

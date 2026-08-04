@@ -77,7 +77,7 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
             "0.04",
         ]
     )
-    if args.variant == "hf":
+    if args.variant in {"hf", "hf_moe"}:
         train_args.extend(
             [
                 "--anti-alias",
@@ -108,6 +108,26 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
                 "0.10",
             ]
         )
+        if args.variant == "hf_moe":
+            train_args.extend(
+                [
+                    "--latent-learnable-moe",
+                    "--learnable-moe-hidden",
+                    str(args.moe_hidden),
+                    "--learnable-moe-experts",
+                    str(args.moe_experts),
+                    "--learnable-moe-top-k",
+                    str(args.moe_top_k),
+                    "--learnable-moe-routing",
+                    args.moe_routing,
+                    "--learnable-moe-shared-experts",
+                    str(args.moe_shared_experts),
+                    "--learnable-moe-router-noise",
+                    str(args.moe_router_noise),
+                    "--lambda-moe-balance",
+                    str(args.lambda_moe_balance),
+                ]
+            )
     else:
         train_args.extend(
             [
@@ -215,7 +235,7 @@ def evaluate(args: argparse.Namespace, checkpoint: Path) -> dict[str, float]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", default="/media/home/lizhonghao/diff_pde/data")
-    parser.add_argument("--variant", choices=["vanilla", "hf"], default="hf")
+    parser.add_argument("--variant", choices=["vanilla", "hf", "hf_moe"], default="hf")
     parser.add_argument("--seed", type=int, default=3407)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch", type=int, default=1)
@@ -232,6 +252,15 @@ def main() -> None:
     parser.add_argument("--transition", type=float, default=0.04)
     parser.add_argument("--lambda-wavelet", type=float, default=0.0)
     parser.add_argument("--wavelet-levels", type=int, default=2)
+    parser.add_argument("--moe-hidden", type=int, default=16)
+    parser.add_argument("--moe-experts", type=int, default=4)
+    parser.add_argument("--moe-top-k", type=int, default=2)
+    parser.add_argument(
+        "--moe-routing", choices=["token_choice", "expert_choice"], default="token_choice"
+    )
+    parser.add_argument("--moe-shared-experts", type=int, default=1)
+    parser.add_argument("--moe-router-noise", type=float, default=0.0)
+    parser.add_argument("--lambda-moe-balance", type=float, default=0.01)
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory(prefix="hfvae-score-") as temporary:

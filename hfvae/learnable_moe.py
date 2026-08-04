@@ -155,7 +155,7 @@ class LearnableTokenMoE(nn.Module):
         self.output = nn.Linear(hidden, channels)
         nn.init.zeros_(self.output.weight)
         nn.init.zeros_(self.output.bias)
-        self.log_temperature = nn.Parameter(torch.tensor(math.log(0.5)))
+        self.log_temperature = nn.Parameter(torch.tensor(math.log(0.25)))
         self._balance_loss = torch.zeros(())
         self.register_buffer(
             "last_importance", torch.full((num_experts,), 1.0 / num_experts)

@@ -153,7 +153,7 @@ class LearnableTokenMoE(nn.Module):
         )
         self.global_expert = _Expert(hidden, expansion=expansion) if global_context else None
         self.output = nn.Linear(hidden, channels)
-        nn.init.zeros_(self.output.weight)
+        nn.init.normal_(self.output.weight, std=1e-3)
         nn.init.zeros_(self.output.bias)
         self.log_temperature = nn.Parameter(torch.tensor(math.log(0.5)))
         self._balance_loss = torch.zeros(())

@@ -388,7 +388,10 @@ passing 或 token attention 可直接接收 `(value, coordinate, mask)`，不要
 - [Geometry-Informed Neural Operator](https://proceedings.neurips.cc/paper_files/paper/2023/file/70518ea42831f02afc3a2828993935ad-Paper-Conference.pdf): 结合几何编码和 Fourier/局部算子处理复杂几何。
 - [From Sparse to Soft Mixture of Experts](https://openreview.net/pdf?id=jxpsAj7ltE): 用可学习 soft token mixing 避免硬 token dispatch 和 token dropping。
 - [CondConv](https://arxiv.org/abs/1904.04971): 通过输入条件化权重混合实现 dynamic expert kernels。
-- [Sparsely-Gated MoE](https://openreview.net/pdf?id=B1ckMDql): 经典 learned routing 与 load-balancing 形式。
+- [Sparsely-Gated MoE](https://arxiv.org/abs/1701.06538): noisy top-k gating 与 learned sparse routing 的原始形式。
+- [Switch Transformer](https://arxiv.org/abs/2101.03961): top-1 routing、router 稳定化和负载平衡的规模化实践。
+- [Expert Choice Routing](https://arxiv.org/abs/2202.09368): 由 expert 选择固定容量 token，避免 token-choice 的容量竞争。
+- [DeepSeekMoE](https://arxiv.org/abs/2401.06066): fine-grained routed experts 加 shared experts，提升组合式专家专门化。
 - [NESTOR](https://arxiv.org/abs/2602.22059): 以 shared/global/local 层级构造 nested MoE neural operator。
 - [ABLE](https://arxiv.org/abs/2605.10451): 学习数据相关的 Parseval frame，说明固定 Fourier basis 的限制可以从“学习基底”而不只是“增加 modes”来缓解。
 - [SFO](https://arxiv.org/abs/2601.17090): 用 Universal Spectral Basis 做谱滤波，强调适配 kernel 结构的基底比盲目扩大 Fourier 截断更重要。

@@ -679,6 +679,41 @@ adaptive mixing 相对 fixed local context 的 overall 误差增加 `1.87%`，�
 但不把尺度选择交给逐 token gate；它仍接受任意 `(value, coords, mask)`，没有 slot、
 FFT cutoff 或规则网格假设。
 
+### VAE expert-level local mixing: partial recovery, no scale specialization
+
+为避免 token-wise gate 自由选择尺度，expert-level 版本令每个 routed expert `e` 使用
+
+\[
+\widetilde h_{i,e}=h_i+A_e\left(\sum_s
+\operatorname{softmax}(a_e)_s\Delta h_{i,s}\right),
+\]
+
+其中 `a_e` 和 `A_e` 都可学习，但在本轮从均匀 mix 和 zero-init adapter 开始。router
+继续按内容在 expert function families 间混合，三个连续 radius 不承载预先定义的频带
+语义。由于外层 residual output 固定为 zero-init，新增分支在初始化时仍不改变 Wan VAE。
+
+`runs/vae_hf_expert_local_mix_h20_r1` 在相同数据、初始化和 4 x H20 / 1 epoch 协议下
+训练 `757.1s`。它明显优于 fixed local context，但仍未超过 global dense MoE：
+
+| VAE latent MoE | valid overall rel-L2 | low rel-L2 | mean predicted HF energy |
+| --- | ---: | ---: | ---: |
+| global dense MoE | **0.057676648** | **0.055451684** | 1.2347e-5 |
+| + fixed learnable local context | 0.070701717 | 0.068622036 | 1.3837e-5 |
+| + expert-level local mix | 0.062134694 | 0.060049268 | **1.1835e-5** |
+
+它相对 fixed local context 降低 overall `12.12%`，并减少预测高通能量 `14.47%`；但仍比
+global MoE 的 overall 高 `7.73%`，lowpass 也高 `8.29%`。因此该结构不作为当前 VAE
+冠军，也不进入三种 downstream backbone 的昂贵 rollout 协议。
+
+机制诊断解释了这一“部分恢复”：learned radii 仍接近
+`[0.04995, 0.15012, 0.40026]`，八个 expert 的尺度权重全部位于
+`[0.33308, 0.33367]`，几乎没有离开均匀初始化。新增的每 expert local adapter 提供了
+额外条件容量，足以改善 shared local context；但 scale logits 位于 outer zero output 和
+zero-init adapter 之后，早期梯度过弱，未形成可识别的尺度专门化。后续只应测试一种
+优化修正：保持 outer residual 的 identity 初始化，但对 expert-local adapter 和 scale
+logits 做零均值、无语义、可复现的对称性破除初始化；若 scale matrix 仍不分化或 VAE
+未超过 global 基线，则停止这条 local-scale MoE 支线。
+
 ## 参考依据
 
 - Deconvolution and Checkerboard Artifacts, Distill 2016: transposed convolution 容易产生棋盘伪影，resize-convolution 是常用替代。

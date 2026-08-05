@@ -134,6 +134,8 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
                 moe_args.append("--learnable-moe-router-inhibition")
             if args.moe_local_context:
                 moe_args.append("--learnable-moe-local-context")
+            if args.moe_adaptive_local_mix:
+                moe_args.append("--learnable-moe-adaptive-local-mix")
             train_args.extend(moe_args)
     else:
         train_args.extend(
@@ -287,6 +289,11 @@ def main() -> None:
         "--moe-local-context",
         action="store_true",
         help="Use learnable-radius coordinate neighborhoods for token experts.",
+    )
+    parser.add_argument(
+        "--moe-adaptive-local-mix",
+        action="store_true",
+        help="Learn token- and state-conditioned mixtures of local coordinate scales.",
     )
     parser.add_argument("--lambda-moe-balance", type=float, default=0.01)
     args = parser.parse_args()

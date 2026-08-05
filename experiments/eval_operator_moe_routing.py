@@ -71,6 +71,12 @@ def evaluate(args: argparse.Namespace) -> dict:
             "local_scales": torch.zeros(
                 3 if module.local_context_enabled else 0, dtype=torch.float64
             ),
+            "local_mix": torch.zeros(
+                3 if module.local_scale_mixer is not None else 0, dtype=torch.float64
+            ),
+            "local_mix_std": torch.zeros(
+                3 if module.local_scale_mixer is not None else 0, dtype=torch.float64
+            ),
             "kernel_scales": torch.zeros(module.num_experts, dtype=torch.float64),
             "kernel_scale_std": torch.zeros(module.num_experts, dtype=torch.float64),
             "kernel_scale_min": torch.zeros(module.num_experts, dtype=torch.float64),
@@ -95,6 +101,14 @@ def evaluate(args: argparse.Namespace) -> dict:
             if local_scales:
                 totals[name]["local_scales"] += torch.tensor(
                     local_scales, dtype=torch.float64
+                )
+            local_mix = stats.get("local_mix", [])
+            if local_mix:
+                totals[name]["local_mix"] += torch.tensor(local_mix, dtype=torch.float64)
+            local_mix_std = stats.get("local_mix_std", [])
+            if local_mix_std:
+                totals[name]["local_mix_std"] += torch.tensor(
+                    local_mix_std, dtype=torch.float64
                 )
             scales = stats.get("kernel_scales", [])
             if scales:
@@ -126,6 +140,16 @@ def evaluate(args: argparse.Namespace) -> dict:
                 "local_scales": (
                     (values["local_scales"] / max(batches, 1)).tolist()
                     if module.local_context_enabled
+                    else []
+                ),
+                "local_mix": (
+                    (values["local_mix"] / max(batches, 1)).tolist()
+                    if module.local_scale_mixer is not None
+                    else []
+                ),
+                "local_mix_std": (
+                    (values["local_mix_std"] / max(batches, 1)).tolist()
+                    if module.local_scale_mixer is not None
                     else []
                 ),
                 "kernel_scales": (

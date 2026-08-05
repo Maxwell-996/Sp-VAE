@@ -37,6 +37,7 @@ def main() -> None:
         default="mlp",
     )
     ap.add_argument("--operator-moe-top-k", type=int, default=2)
+    ap.add_argument("--operator-moe-shared-experts", type=int, default=2)
     ap.add_argument("--operator-moe-router-inhibition", action="store_true")
     ap.add_argument("--operator-moe-local-context", action="store_true")
     ap.add_argument("--master-port", type=int, default=29943)
@@ -108,7 +109,7 @@ def main() -> None:
         "--operator-moe-expert-kind",
         args.operator_moe_expert_kind,
         "--operator-moe-shared-experts",
-        "2",
+        str(args.operator_moe_shared_experts),
     ]
     if args.operator_moe_router_inhibition:
         train_cmd.append("--operator-moe-router-inhibition")

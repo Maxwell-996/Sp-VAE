@@ -486,13 +486,14 @@ mean 从 `0.234194` 降到 `0.221967`，相对改善 `5.22%`；其中 Transolver
 ### Coordinate-kernel experts
 
 **Artifact note (2026-08-05).** The first fixed/adaptive-kernel score runs used
-the scorer's temporary output directory, and their checkpoints were not
-retained. The numerical tables in this kernel/local-context sequence are
-therefore historical observations that motivate a fixed-protocol replication,
-not retained benchmark artifacts. `runs/repro_adaptive_kernel_local_dense8_shared2_r1`
-is the persistent reproduction of the strongest historical configuration; only
-its saved checkpoint, physical JSON, and routing report will be used for the
-next comparison or default selection.
+the scorer's temporary output directory, so their standalone checkpoints were
+not retained. `runs/repro_adaptive_kernel_local_dense8_shared2_r1` persistently
+reproduces the strongest historical configuration: FNO/Transolver/CNextU
+physical rollout is `0.146549/0.230675/0.157435`, mean `0.178220`, within
+`8e-6` of the original report. Its checkpoints, physical JSON, and routing
+reports are the retained baseline for subsequent comparisons. The fixed- and
+adaptive-kernel rows below without local context remain historical observations
+until separately reproduced.
 
 此前 routed expert 只是逐 token MLP，因而 dense routing 的收益可能只来自更大的
 逐点容量。受 CondConv 的条件化 kernel bank、Kernel Neural Operator 和 spatially
@@ -597,13 +598,13 @@ low/mid/high slot 或 FFT cutoff，坐标可以来自任意不规则采样。
 | configuration | FNO physical | Transolver physical | CNextU physical | mean |
 | --- | ---: | ---: | ---: | ---: |
 | sample-adaptive coordinate-kernel | 0.151548 | 0.251153 | 0.159708 | 0.187469 |
-| + learnable local context | **0.146549** | **0.230667** | **0.157435** | **0.178217** |
+| + learnable local context (retained r1) | **0.146549** | **0.230675** | **0.157435** | **0.178220** |
 
-历史观察中 mean 相对 adaptive kernel 再降 `4.94%`，相对 output-only baseline `0.243579` 降
+retained r1 的 mean 相对历史 adaptive kernel 再降 `4.93%`，相对 output-only baseline `0.243579` 降
 `26.83%`；FNO、Transolver、CNextU 的改善分别为 `3.30%`、`8.16%`、`1.42%`。对应
 latent test rollout 为 `0.184896`、`0.299876`、`0.187773`，与 decoded physical 指标
 方向一致。和 fixed coordinate-kernel 相比，FNO/CNextU 的单模型最优仍略偏向 fixed
-radius，但 local context 的 Transolver 增益足以使它成为三模型平均指标的历史最佳候选。
+radius，但 local context 的 Transolver 增益足以使它成为当前三模型平均指标的可复核最佳候选。
 
 训练时间从 fixed adaptive kernel 的 FNO/Transolver/CNextU `831/699/1271s` 增至
 `914/800/1431s`（约 `10%/15%/13%`），所以该结果不是用数量级更高计算换取的微小改善。

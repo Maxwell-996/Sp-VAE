@@ -696,6 +696,32 @@ fixed-frequency partition。
 `--rollout-loss-gamma 1.0`，同时保留 FNO/CNextU `shared=1`、Transolver `shared=4`。
 FNO 的 AR5 negative result 限制了该结论：4 是当前有效默认，不是“任意更长 horizon
 都更好”的规律。
+
+#### Historical relative rollout supervision: retained negative result
+
+受 [HERO: History-Enriched Rollout Training](https://arxiv.org/abs/2607.29135)
+启发，测试了一个不改变 MoE routing 或 expert family 的历史参考目标。冻结 AR2 FNO
+checkpoint 并在每个 AR4 batch 生成 detached teacher rollout；令 student 和 teacher 的
+discounted per-sample MSE 分别为 `e_s,e_t`，训练权重为
+
+\[
+w=1+\lambda\frac{[e_s-e_t+m]_+}{[e_s-e_t+m]_+ + \tau},
+\qquad \mathcal L=\frac{1}{B}\sum_iw_i e_{s,i}.
+\]
+
+这里 `lambda=0.25`、`m=0`、`tau=0.01`，因此它只对尚未超过历史模型的样本做最多
+25% 的有界重加权，teacher 不接收梯度。四卡 full-scale FNO 的结果为：
+
+| FNO AR4 objective | latent test rollout | decoded physical rollout | training seconds |
+| --- | ---: | ---: | ---: |
+| direct AR4 | **0.123037** | **0.100455** | 2099 |
+| + frozen AR2 relative weighting | 0.125647 | 0.101068 | 2582 |
+
+权重平均值从第 0 epoch 的 `1.219` 逐渐降到第 29 epoch 的 `1.017`，表明难样本 gate
+按预期失活，但最终 latent 和 physical 指标分别退化 `2.12%` 与 `0.61%`。当前数据中
+AR4 ground-truth loss 已足够提供稳定梯度，AR2 history 只增加了计算成本，不能作为
+默认。实现保留为 `--historical-rollout-*` 的可选研究开关，artifact 为
+`runs/ablation_ar4_historical_fno_lambda025_r1`。
 复现开关为 `--operator-moe-local-context`。
 
 训练和评估代码对旧 checkpoint 做了兼容处理：`operator_moe` 与
@@ -882,6 +908,7 @@ revert 中移除，full artifacts 保留在 `runs/vae_hf_latent_prediction_h20_r
 - [Expert Choice Routing](https://arxiv.org/abs/2202.09368): 由 expert 选择固定容量 token，避免 token-choice 的容量竞争。
 - [DeepSeekMoE](https://arxiv.org/abs/2401.06066): fine-grained routed experts 加 shared experts，提升组合式专家专门化。
 - [NESTOR](https://arxiv.org/abs/2602.22059): 以 shared/global/local 层级构造 nested MoE neural operator。
+- [HERO](https://arxiv.org/abs/2607.29135): 用历史模型的失败 rollout 构造 margin-based relative supervision，直接启发历史参考的 operator loss 对照。
 - [Mixture of Neural Operator Experts](https://arxiv.org/abs/2502.04562): 用空间条件 MoE
   处理边界条件与模型选择，是 coordinate-kernel expert 的直接结构动机。
 - [U-HNO / SPAR](https://arxiv.org/abs/2605.12965): 学习每个位置在 global Fourier 与 local multi-scale Gaussian 分支之间的分配，是 adaptive global/local 实验的直接动机。

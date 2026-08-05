@@ -10,6 +10,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 import torch.distributed as dist
@@ -411,6 +412,74 @@ def rollout_mse_loss(
     return (per_step * weights).sum() / weights.sum()
 
 
+def rollout_mse_per_sample(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    gamma: float,
+) -> torch.Tensor:
+    """Return discounted rollout MSE for every item in a batch."""
+    if not 0.0 < gamma <= 1.0:
+        raise ValueError("rollout_loss_gamma must be in (0, 1]")
+    if targets.dim() == 4:
+        targets = targets.unsqueeze(1)
+    per_step = (predictions - targets).square().mean(dim=(2, 3, 4))
+    weights = gamma ** torch.arange(
+        per_step.shape[1], device=per_step.device, dtype=per_step.dtype
+    )
+    return (per_step * weights).sum(dim=1) / weights.sum()
+
+
+def historical_rollout_loss(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    teacher_predictions: torch.Tensor,
+    gamma: float,
+    weight: float,
+    margin: float,
+    scale: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Bounded hard-sample weighting against a detached historical rollout."""
+    if weight < 0:
+        raise ValueError("historical_rollout_weight must be non-negative")
+    if margin < 0:
+        raise ValueError("historical_rollout_margin must be non-negative")
+    if scale <= 0:
+        raise ValueError("historical_rollout_scale must be positive")
+    student_error = rollout_mse_per_sample(predictions, targets, gamma)
+    teacher_error = rollout_mse_per_sample(teacher_predictions, targets, gamma)
+    hardness = (student_error.detach() - teacher_error + margin).clamp_min(0)
+    sample_weight = 1.0 + weight * hardness / (hardness + scale)
+    return (sample_weight * student_error).mean(), sample_weight
+
+
+def load_historical_rollout_teacher(
+    checkpoint_path: str | Path,
+    name: str,
+    dim_in: int,
+    dim_out: int,
+    height: int,
+    width: int,
+    history: int,
+    device: torch.device,
+) -> torch.nn.Module:
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    row = checkpoint.get("row", {})
+    teacher_name = row.get("model", name)
+    if teacher_name != name:
+        raise ValueError(
+            f"historical checkpoint is for {teacher_name}, not requested model {name}"
+        )
+    teacher_args = SimpleNamespace(**checkpoint["args"])
+    if int(getattr(teacher_args, "history", history)) != history:
+        raise ValueError("historical checkpoint history does not match training history")
+    teacher = build_model(name, dim_in, dim_out, height, width, teacher_args).to(device)
+    teacher.load_state_dict(checkpoint["model"], strict=True)
+    teacher.eval()
+    for parameter in teacher.parameters():
+        parameter.requires_grad_(False)
+    return teacher
+
+
 @torch.no_grad()
 def eval_rollout(
     model,
@@ -473,6 +542,14 @@ def main() -> None:
         default=1.0,
         help="Per-step discount for the rollout loss, in (0, 1].",
     )
+    ap.add_argument(
+        "--historical-rollout-ckpt",
+        default=None,
+        help="Frozen operator checkpoint used for bounded relative rollout weighting.",
+    )
+    ap.add_argument("--historical-rollout-weight", type=float, default=0.0)
+    ap.add_argument("--historical-rollout-margin", type=float, default=0.0)
+    ap.add_argument("--historical-rollout-scale", type=float, default=0.01)
     ap.add_argument("--no-phys", dest="use_phys", action="store_false")
     ap.set_defaults(use_phys=True)
     ap.add_argument("--hidden", type=int, default=64)
@@ -538,6 +615,16 @@ def main() -> None:
         raise ValueError("--train-rollout-horizon must be positive")
     if not 0.0 < args.rollout_loss_gamma <= 1.0:
         raise ValueError("--rollout-loss-gamma must be in (0, 1]")
+    if args.historical_rollout_weight < 0:
+        raise ValueError("--historical-rollout-weight must be non-negative")
+    if args.historical_rollout_margin < 0:
+        raise ValueError("--historical-rollout-margin must be non-negative")
+    if args.historical_rollout_scale <= 0:
+        raise ValueError("--historical-rollout-scale must be positive")
+    if args.historical_rollout_weight and args.historical_rollout_ckpt is None:
+        raise ValueError("--historical-rollout-ckpt is required when historical weight is nonzero")
+    if args.historical_rollout_weight and args.train_rollout_horizon == 1:
+        raise ValueError("historical rollout weighting requires --train-rollout-horizon > 1")
     train_ds = LatentTrajectoryDataset(
         args.latent_root,
         "train",
@@ -653,6 +740,20 @@ def main() -> None:
     for name in args.models:
         seed_all(args.seed)
         model = build_model(name, dim_in, dim_out, h, w, args).to(device)
+        teacher = (
+            load_historical_rollout_teacher(
+                args.historical_rollout_ckpt,
+                name,
+                dim_in,
+                dim_out,
+                h,
+                w,
+                args.history,
+                device,
+            )
+            if args.historical_rollout_weight > 0
+            else None
+        )
         train_model: torch.nn.Module = model
         if distributed:
             train_model = DDP(
@@ -672,6 +773,7 @@ def main() -> None:
             train_model.train()
             tsum = 0.0
             tn = 0
+            twsum = 0.0
             for x, y in train_dl:
                 x = x.to(device)
                 y = y.to(device)
@@ -683,16 +785,32 @@ def main() -> None:
                     pred = autoregressive_predictions(
                         train_model, x, y, args.history, args.use_phys
                     )
-                    loss = rollout_mse_loss(pred, y, args.rollout_loss_gamma)
+                    if teacher is None:
+                        loss = rollout_mse_loss(pred, y, args.rollout_loss_gamma)
+                    else:
+                        with torch.no_grad():
+                            teacher_pred = autoregressive_predictions(
+                                teacher, x, y, args.history, args.use_phys
+                            )
+                        loss, sample_weight = historical_rollout_loss(
+                            pred,
+                            y,
+                            teacher_pred,
+                            args.rollout_loss_gamma,
+                            args.historical_rollout_weight,
+                            args.historical_rollout_margin,
+                            args.historical_rollout_scale,
+                        )
+                        twsum += float(sample_weight.detach().sum())
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(train_model.parameters(), 1.0)
                 opt.step()
                 tsum += float(loss.detach()) * x.size(0)
                 tn += x.size(0)
             if distributed:
-                stats = torch.tensor([tsum, tn], device=device, dtype=torch.float64)
+                stats = torch.tensor([tsum, tn, twsum], device=device, dtype=torch.float64)
                 dist.all_reduce(stats, op=dist.ReduceOp.SUM)
-                tsum, tn = stats.tolist()
+                tsum, tn, twsum = stats.tolist()
             if args.train_rollout_horizon == 1:
                 val = eval_one_step(
                     train_model, valid_dl, device, args.eval_batches, distributed
@@ -715,7 +833,12 @@ def main() -> None:
             if rank == 0:
                 print(
                     f"{name} ep={ep:03d} train_mse={tsum / max(tn, 1):.4g} "
-                    f"val_rel={val:.4g}",
+                    f"val_rel={val:.4g}"
+                    + (
+                        f" historical_weight={twsum / max(tn, 1):.4g}"
+                        if teacher is not None
+                        else ""
+                    ),
                     flush=True,
                 )
         if best_state is not None:
@@ -745,6 +868,10 @@ def main() -> None:
             "history": args.history,
             "train_rollout_horizon": args.train_rollout_horizon,
             "rollout_loss_gamma": args.rollout_loss_gamma,
+            "historical_rollout_weight": args.historical_rollout_weight,
+            "historical_rollout_margin": args.historical_rollout_margin,
+            "historical_rollout_scale": args.historical_rollout_scale,
+            "historical_rollout_ckpt": args.historical_rollout_ckpt or "",
             "seconds": time.time() - t_start,
         }
         if rank == 0:

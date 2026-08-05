@@ -44,6 +44,10 @@ def main() -> None:
     ap.add_argument("--operator-moe-expert-local-mix", action="store_true")
     ap.add_argument("--train-rollout-horizon", type=int, default=1)
     ap.add_argument("--rollout-loss-gamma", type=float, default=1.0)
+    ap.add_argument("--historical-rollout-ckpt", default=None)
+    ap.add_argument("--historical-rollout-weight", type=float, default=0.0)
+    ap.add_argument("--historical-rollout-margin", type=float, default=0.0)
+    ap.add_argument("--historical-rollout-scale", type=float, default=0.01)
     ap.add_argument("--master-port", type=int, default=29943)
     args = ap.parse_args()
 
@@ -54,6 +58,8 @@ def main() -> None:
     )
     if args.out_root is not None and out_root.exists():
         raise FileExistsError(f"score output already exists: {out_root}")
+    if args.historical_rollout_ckpt is not None and len(args.models) != 1:
+        raise ValueError("historical rollout scoring accepts exactly one model per run")
     operator_root = out_root / "operator"
     physical_root = out_root / "physical"
     operator_root.mkdir(parents=True)
@@ -127,6 +133,19 @@ def main() -> None:
         train_cmd.append("--operator-moe-adaptive-local-mix")
     if args.operator_moe_expert_local_mix:
         train_cmd.append("--operator-moe-expert-local-mix")
+    if args.historical_rollout_ckpt is not None:
+        train_cmd.extend(
+            [
+                "--historical-rollout-ckpt",
+                args.historical_rollout_ckpt,
+                "--historical-rollout-weight",
+                str(args.historical_rollout_weight),
+                "--historical-rollout-margin",
+                str(args.historical_rollout_margin),
+                "--historical-rollout-scale",
+                str(args.historical_rollout_scale),
+            ]
+        )
     subprocess.run(train_cmd, cwd=ROOT, check=True)
 
     jobs = []

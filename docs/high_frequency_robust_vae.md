@@ -567,6 +567,39 @@ python experiments/score_operator_moe.py \
   --operator-moe-expert-kind adaptive_kernel
 ```
 
+### Learnable multi-scale local context
+
+adaptive radius 只改变 kernel expert 的样本级感受野，不能直接把局部变化作为路由证据。
+因此对任意 `(value, coords, mask)` token 增加三个可学习坐标尺度的局部差分：
+
+\[
+\Delta h_i=\frac{1}{3}\sum_s\left[
+\frac{\sum_j \exp(-\|c_i-c_j\|^2/(2\rho_s^2))m_jh_j}
+{\sum_j \exp(-\|c_i-c_j\|^2/(2\rho_s^2))m_j}-h_i\right],
+\qquad \rho_s\ \text{learnable}.
+\]
+
+它经 zero-init 的线性分支同时提供给 token router 与 expert input；因此初始 adapter
+仍是 identity。三个 `\rho_s` 是连续且数据学习的邻域尺度，不是预定义的
+low/mid/high slot 或 FFT cutoff，坐标可以来自任意不规则采样。
+
+在同一 full-scale protocol 中，local context 使三种 backbone 都改善：
+
+| configuration | FNO physical | Transolver physical | CNextU physical | mean |
+| --- | ---: | ---: | ---: | ---: |
+| sample-adaptive coordinate-kernel | 0.151548 | 0.251153 | 0.159708 | 0.187469 |
+| + learnable local context | **0.146549** | **0.230667** | **0.157435** | **0.178217** |
+
+mean 相对 adaptive kernel 再降 `4.94%`，相对 output-only baseline `0.243579` 降
+`26.83%`；FNO、Transolver、CNextU 的改善分别为 `3.30%`、`8.16%`、`1.42%`。对应
+latent test rollout 为 `0.184896`、`0.299876`、`0.187773`，与 decoded physical 指标
+方向一致。和 fixed coordinate-kernel 相比，FNO/CNextU 的单模型最优仍略偏向 fixed
+radius，但 local context 的 Transolver 增益足以使它成为三模型平均指标的当前最佳。
+
+训练时间从 fixed adaptive kernel 的 FNO/Transolver/CNextU `831/699/1271s` 增至
+`914/800/1431s`（约 `10%/15%/13%`），所以该结果不是用数量级更高计算换取的微小改善。
+复现开关为 `--operator-moe-local-context`。
+
 训练和评估代码对旧 checkpoint 做了兼容处理：`operator_moe` 与
 `operator_internal_moe` 是两个独立结构标志，读取缺少新字段的旧 checkpoint 时只
 重建 output adapter，不会凭 `operator_moe` 误加 hidden adapters。

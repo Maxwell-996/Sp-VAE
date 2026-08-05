@@ -68,6 +68,9 @@ def evaluate(args: argparse.Namespace) -> dict:
             "load": torch.zeros(module.num_experts, dtype=torch.float64),
             "temperature": 0.0,
             "global_gate": 0.0,
+            "local_scales": torch.zeros(
+                3 if module.local_context_enabled else 0, dtype=torch.float64
+            ),
             "kernel_scales": torch.zeros(module.num_experts, dtype=torch.float64),
             "kernel_scale_std": torch.zeros(module.num_experts, dtype=torch.float64),
             "kernel_scale_min": torch.zeros(module.num_experts, dtype=torch.float64),
@@ -88,6 +91,11 @@ def evaluate(args: argparse.Namespace) -> dict:
             totals[name]["load"] += torch.tensor(stats["load"], dtype=torch.float64)
             totals[name]["temperature"] += float(stats["temperature"][0])
             totals[name]["global_gate"] += float(stats["global_gate"][0])
+            local_scales = stats.get("local_scales", [])
+            if local_scales:
+                totals[name]["local_scales"] += torch.tensor(
+                    local_scales, dtype=torch.float64
+                )
             scales = stats.get("kernel_scales", [])
             if scales:
                 totals[name]["kernel_scales"] += torch.tensor(
@@ -115,6 +123,11 @@ def evaluate(args: argparse.Namespace) -> dict:
                 "load": (values["load"] / max(batches, 1)).tolist(),
                 "temperature": values["temperature"] / max(batches, 1),
                 "global_gate": values["global_gate"] / max(batches, 1),
+                "local_scales": (
+                    (values["local_scales"] / max(batches, 1)).tolist()
+                    if module.local_context_enabled
+                    else []
+                ),
                 "kernel_scales": (
                     (values["kernel_scales"] / max(batches, 1)).tolist()
                     if module.expert_kind in {"kernel", "adaptive_kernel"}

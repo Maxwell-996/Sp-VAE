@@ -608,6 +608,44 @@ radius，但 local context 的 Transolver 增益足以使它成为当前三模�
 
 训练时间从 fixed adaptive kernel 的 FNO/Transolver/CNextU `831/699/1271s` 增至
 `914/800/1431s`（约 `10%/15%/13%`），所以该结果不是用数量级更高计算换取的微小改善。
+
+### Autoregressive rollout supervision improves all retained MoE operators
+
+静态 VAE reconstruction 已不能保证 latent dynamics 可预测，且 VAE 内直接加入 pointwise
+temporal persistence 会与 NS advection 冲突。因此保持 retained global dense VAE 和
+adaptive coordinate-kernel MoE 不变，只把 operator 的训练目标改为两步闭环：
+
+\[
+\mathcal L_{\rm AR2}=\frac{1}{2}\sum_{s=1}^{2}
+\left\|\hat z_{t+s}-z_{t+s}\right\|_2^2,
+\qquad
+\hat z_{t+s}=F_\theta(\hat z_{t+s-4:t+s-1}, r).
+\]
+
+第二步以第一步模型预测而不是 ground truth 作为 history，梯度穿过两次同一 operator。
+这不引入 slot、频带标签、FFT projection 或 token 重排；token 数量、坐标和 expert
+families 均与 retained one-step MoE 相同。FNO/CNextU 固定 1 shared expert，Transolver
+固定 4 shared experts，均为 30 epochs、seed `3407`、4 x H20、240 条 test trajectory。
+
+| operator | one-step latent rollout | AR2 latent rollout | change | one-step physical | AR2 physical | change |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| FNO | 0.166681 | **0.139304** | -16.42% | 0.132042 | **0.112228** | -15.01% |
+| Transolver | 0.287228 | **0.225954** | -21.33% | 0.217964 | **0.180126** | -17.36% |
+| CNextU | 0.165775 | **0.146113** | -11.86% | 0.139460 | **0.123542** | -11.41% |
+| mean | 0.206561 | **0.170457** | -17.48% | 0.163155 | **0.138632** | -15.03% |
+
+Artifacts are `runs/ablation_ar2_adaptive_kernel_local_dense8_shared1_r1` (FNO,
+CNextU) and `runs/ablation_ar2_adaptive_kernel_local_dense8_shared4_r1`
+(Transolver). FNO/CNextU 的 one-step test error 分别从 `0.03784/0.04635` 变为
+`0.04778/0.06350`，但完整 rollout 和 decoded physical error 均显著下降；因此该收益
+不是普通的单步拟合提升，而是直接减少了自回归漂移。
+
+对每个 checkpoint 的 16 个 test batch routing diagnostics 表明 dense `top-k=8` 的
+hard load 结构性地保持 `0.125`，应以 soft importance 和连续 kernel radius 判断专家
+分工。输出 adapter 的 expert radius ranges 是 FNO `0.104-0.200`、CNextU
+`0.155-0.280`、Transolver `0.093-0.256`，并且 soft importance 显著内容条件化。
+这支持的是 learned continuous operator families，而不是固定 low/mid/high bands 或
+slot semantics。
 复现开关为 `--operator-moe-local-context`。
 
 训练和评估代码对旧 checkpoint 做了兼容处理：`operator_moe` 与

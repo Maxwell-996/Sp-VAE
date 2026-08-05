@@ -94,10 +94,6 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
                 "0.10",
                 "--lambda-latent-consistency",
                 "0.05",
-                "--lambda-latent-prediction",
-                str(args.lambda_latent_prediction),
-                "--latent-predictor-hidden",
-                str(args.latent_predictor_hidden),
             "--lambda-noisy-reconstruction",
             "0.05",
             "--lambda-wavelet",
@@ -267,8 +263,6 @@ def main() -> None:
     parser.add_argument("--transition", type=float, default=0.04)
     parser.add_argument("--lambda-wavelet", type=float, default=0.0)
     parser.add_argument("--wavelet-levels", type=int, default=2)
-    parser.add_argument("--lambda-latent-prediction", type=float, default=0.0)
-    parser.add_argument("--latent-predictor-hidden", type=int, default=16)
     parser.add_argument("--moe-hidden", type=int, default=16)
     parser.add_argument("--moe-experts", type=int, default=4)
     parser.add_argument("--moe-top-k", type=int, default=4)

@@ -729,6 +729,27 @@ seeded run 的 eight expert scale mixes 真正分化，分量范围为 `[0.08600
 rollout。当前 retained VAE 仍是 global dense MoE，downstream 则使用其 latent 和
 adaptive coordinate-kernel + fixed learnable local context 的 operator adapter。
 
+### Coordinate-kernel experts are not a VAE replacement
+
+coordinate-kernel expert 在 operator 中表现强，因此也短暂暴露到 Wan latent MoE：每个
+expert 对 latent tokens 使用内容和相对坐标条件化的积分核，而非 FFT mode 或 slot。该
+形式本身支持任意 `(value, coords, mask)`，但相同的 expert family 不必在 encoding 和
+autoregressive operator 两个位置都有效。
+
+在 H20 GPU 1、相同 tiny `hf_moe` protocol、相同 seed 下，MLP 与 coordinate-kernel 的
+直接对照为：
+
+| VAE routed expert | clean rel-L2 | robust val rel-L2 | HFS leakage |
+| --- | ---: | ---: | ---: |
+| MLP | **1.000709072** | **1.000712298** | 1.7659e-5 |
+| coordinate kernel | 1.004384294 | 1.004384562 | **1.7180e-5** |
+
+kernel 虽轻微降低 leakage，但 clean 和 combined reconstruction 明显变差，未满足 full
+H20 run 的门槛。该 VAE interface 已在后续 revert 中移除；coordinate-kernel 保留在
+downstream operator adapter，因为它在该层有独立、完整的三 backbone 证据。这个负例
+进一步说明高频鲁棒性取决于模块位置和训练目标，不能把 operator 的有效 MoE expert
+机械复制到 VAE encoder latent。
+
 ## 参考依据
 
 - Deconvolution and Checkerboard Artifacts, Distill 2016: transposed convolution 容易产生棋盘伪影，resize-convolution 是常用替代。
@@ -761,19 +782,21 @@ adaptive coordinate-kernel + fixed learnable local context 的 operator adapter�
 
 ### 下一轮可执行的多模型实验
 
-在已有 FFT/local cross-band 与 token-MoE 之外，优先级如下：
+本轮已经排除逐 token scale gate、expert-local uniform mix、强制随机尺度分化和 VAE
+coordinate-kernel experts。VAE architecture 因此冻结为 retained global dense MoE；继续
+修改 router 或局部尺度将重复已验证的失败模式。优先级调整为：
 
-1. 用 `learnable token MoE` 比较 token-choice/expert-choice、不同初始化、top-1/top-2、专家数和 routing balance，
-   同时记录 expert importance/load，检查高频区域是否真的被单独路由，而不是所有 token
-   塌缩到同一 expert。
-2. 加入 nested global/local 路径：global context 只提供低频和长程条件，local token
-   experts 保留高频残差；这对应 NESTOR/M²M 的结构，但保留 zero-init latent contract。
-3. 在规则 `data_128` 上做 adaptive-basis ablation：让低频 expert 学习少量 radial
-   filter/basis 参数，而不是固定 cutoff；目标是区分“FFT 截断不足”和“固定 basis 不合适”。
+1. 在 retained VAE 上加入轻量 latent temporal-predictive auxiliary：从历史 latent 预测
+   下一 latent，训练时丢弃 auxiliary head。它直接检验“重建误差较低的表示是否也更适合
+   NS 自回归”，并保留 global dense MoE 作为唯一的 routed capacity。
+2. 仅当该 VAE 同时不劣于 `0.057676648` reconstruction baseline 且提升 latent rollout，
+   才 cache train/valid/test latent 并在 FNO、Transolver、CNextU 的固定 30 epoch / decoded
+   physical rollout 协议下重新评估。
+3. 在 operator 侧保留 adaptive coordinate-kernel + fixed local context，按 backbone 独立
+   选择 shared experts：FNO/CNextU 用 1，Transolver 用 4；不要以单一 shared 容量替代
+   已验证的 per-backbone 最优配置。
 4. 对不规则采样只比较支持坐标的 GITO/GNO/GNOT/GINO 类分支，报告 `n_obs`、边界偏置、
    query resolution 和缺失点 mask 的鲁棒性；不把 irregular 点强行 reshape 成 FFT 网格。
-5. 对 internal MoE 做 stage 选择消融：FNO/Transolver 保留 hidden blocks，CNextU 只在
-   decoder 或低分辨率 bottleneck 路由，单独报告参数量、吞吐和 decoded physical error。
 
 最终选择仍然以三层证据为准：VAE 的 low/high reconstruction、latent FNO/Transolver/
 CNextU rollout，以及解码后的 physical rollout；单一 static rel-L2 改善不能作为保留依据。

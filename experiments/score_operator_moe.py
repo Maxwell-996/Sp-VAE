@@ -33,7 +33,7 @@ def main() -> None:
     )
     ap.add_argument(
         "--operator-moe-expert-kind",
-        choices=["mlp", "kernel"],
+        choices=["mlp", "kernel", "adaptive_kernel"],
         default="mlp",
     )
     ap.add_argument("--operator-moe-top-k", type=int, default=2)

@@ -93,7 +93,12 @@ class _Expert(nn.Module):
 class _CoordinateKernelExpert(nn.Module):
     """Content- and coordinate-conditioned kernel operator for arbitrary tokens."""
 
-    def __init__(self, hidden: int, expansion: int = 2):
+    def __init__(
+        self,
+        hidden: int,
+        expansion: int = 2,
+        adaptive_radius: bool = False,
+    ):
         super().__init__()
         attention_hidden = max(8, hidden // 2)
         self.query_norm = nn.LayerNorm(hidden)
@@ -111,6 +116,19 @@ class _CoordinateKernelExpert(nn.Module):
         nn.init.zeros_(self.coordinate_bias[-1].weight)
         nn.init.zeros_(self.coordinate_bias[-1].bias)
         self.log_length_scale = nn.Parameter(torch.tensor(math.log(0.25)))
+        self.radius_router = (
+            nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, 1))
+            if adaptive_radius
+            else None
+        )
+        if self.radius_router is not None:
+            nn.init.zeros_(self.radius_router[-1].weight)
+            nn.init.zeros_(self.radius_router[-1].bias)
+        self.register_buffer(
+            "last_effective_length_scale",
+            torch.tensor(0.25),
+            persistent=False,
+        )
         self.output = nn.Sequential(
             nn.LayerNorm(hidden),
             nn.Linear(hidden, hidden * expansion),
@@ -120,6 +138,9 @@ class _CoordinateKernelExpert(nn.Module):
 
     def length_scale(self) -> torch.Tensor:
         return self.log_length_scale.exp().clamp(1e-3, 4.0)
+
+    def effective_length_scale(self) -> torch.Tensor:
+        return self.last_effective_length_scale
 
     def forward(
         self,
@@ -137,7 +158,16 @@ class _CoordinateKernelExpert(nn.Module):
 
         delta = coords[:, :, None, :].float() - coords[:, None, :, :].float()
         distance2 = delta.square().sum(dim=-1)
-        scale = self.length_scale().float()
+        scale = self.length_scale().to(dtype=x.dtype)
+        if self.radius_router is not None:
+            valid = mask[:, :, None].to(x.dtype)
+            pooled = (x * valid).sum(dim=1, keepdim=True) / valid.sum(
+                dim=1, keepdim=True
+            ).clamp_min(1.0)
+            # Zero-initialized modulation preserves the fixed-kernel baseline.
+            modulation = 0.5 * torch.tanh(self.radius_router(pooled))
+            scale = (scale * modulation.exp()).clamp(1e-3, 4.0)
+        self.last_effective_length_scale.copy_(scale.detach().float().mean())
         coordinate_logits = self.coordinate_bias(delta.to(x.dtype)).squeeze(-1)
         logits = content_logits - distance2.to(x.dtype) / (2.0 * scale.square())
         logits = logits + coordinate_logits
@@ -188,8 +218,8 @@ class LearnableTokenMoE(nn.Module):
             raise ValueError("top_k must satisfy 1 <= top_k <= num_experts")
         if routing not in {"token_choice", "expert_choice"}:
             raise ValueError("routing must be token_choice or expert_choice")
-        if expert_kind not in {"mlp", "kernel"}:
-            raise ValueError("expert_kind must be mlp or kernel")
+        if expert_kind not in {"mlp", "kernel", "adaptive_kernel"}:
+            raise ValueError("expert_kind must be mlp, kernel, or adaptive_kernel")
         if shared_experts < 1:
             raise ValueError("shared_experts must be positive")
         if router_noise_std < 0:
@@ -220,10 +250,18 @@ class LearnableTokenMoE(nn.Module):
             nn.LayerNorm(hidden * 2),
             nn.Linear(hidden * 2, num_experts),
         )
-        expert_cls = _CoordinateKernelExpert if expert_kind == "kernel" else _Expert
-        self.experts = nn.ModuleList(
-            [expert_cls(hidden, expansion=expansion) for _ in range(num_experts)]
-        )
+        if expert_kind == "mlp":
+            experts = [_Expert(hidden, expansion=expansion) for _ in range(num_experts)]
+        else:
+            experts = [
+                _CoordinateKernelExpert(
+                    hidden,
+                    expansion=expansion,
+                    adaptive_radius=expert_kind == "adaptive_kernel",
+                )
+                for _ in range(num_experts)
+            ]
+        self.experts = nn.ModuleList(experts)
         self.shared = _Expert(hidden, expansion=expansion)
         self.shared_extra = nn.ModuleList(
             [_Expert(hidden, expansion=expansion) for _ in range(shared_experts - 1)]
@@ -315,8 +353,8 @@ class LearnableTokenMoE(nn.Module):
                 else []
             ),
             "kernel_scales": (
-                [float(expert.length_scale().detach().cpu()) for expert in self.experts]
-                if self.expert_kind == "kernel"
+                [float(expert.effective_length_scale().detach().cpu()) for expert in self.experts]
+                if self.expert_kind in {"kernel", "adaptive_kernel"}
                 else []
             ),
         }

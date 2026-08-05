@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from hfvae.losses import HFVAELossConfig, compute_vae_loss
+from hfvae.losses import HFVAELossConfig, LatentTemporalPredictor, compute_vae_loss
 from hfvae.ns_data import NSShardDataset, ShardContiguousSampler, resolve_data_root, resize_video
 from hfvae.wan22_hf_vae import WanVAEHF
 
@@ -27,11 +27,22 @@ from hfvae.wan22_hf_vae import WanVAEHF
 class _LossModule(torch.nn.Module):
     """Expose the VAE loss through forward so DDP can synchronize gradients."""
 
-    def __init__(self, model: WanVAEHF, loss_cfg: HFVAELossConfig, noise: float):
+    def __init__(
+        self,
+        model: WanVAEHF,
+        loss_cfg: HFVAELossConfig,
+        noise: float,
+        latent_predictor_hidden: int,
+    ):
         super().__init__()
         self.model = model
         self.loss_cfg = loss_cfg
         self.noise = noise
+        self.latent_predictor = (
+            LatentTemporalPredictor(model.z_dim, latent_predictor_hidden)
+            if loss_cfg.lambda_latent_prediction
+            else None
+        )
 
     def forward(self, x: torch.Tensor):
         return compute_vae_loss(
@@ -39,6 +50,7 @@ class _LossModule(torch.nn.Module):
             x,
             self.loss_cfg,
             latent_consistency_noise=self.noise,
+            latent_predictor=self.latent_predictor,
         )
 
 
@@ -181,6 +193,8 @@ def main() -> None:
     ap.add_argument("--lambda-wavelet", type=float, default=0.0)
     ap.add_argument("--lambda-sobolev", type=float, default=0.05)
     ap.add_argument("--lambda-latent-consistency", type=float, default=0.05)
+    ap.add_argument("--lambda-latent-prediction", type=float, default=0.0)
+    ap.add_argument("--latent-predictor-hidden", type=int, default=32)
     ap.add_argument("--lambda-noisy-reconstruction", type=float, default=0.0)
     ap.add_argument("--lambda-temporal", type=float, default=0.0)
     ap.add_argument("--lambda-vorticity", type=float, default=0.0)
@@ -272,6 +286,7 @@ def main() -> None:
         lambda_wavelet=args.lambda_wavelet,
         lambda_sobolev=args.lambda_sobolev,
         lambda_latent_consistency=args.lambda_latent_consistency,
+        lambda_latent_prediction=args.lambda_latent_prediction,
         lambda_noisy_reconstruction=args.lambda_noisy_reconstruction,
         lambda_temporal=args.lambda_temporal,
         lambda_vorticity=args.lambda_vorticity,
@@ -283,7 +298,12 @@ def main() -> None:
         sobolev_s=args.sobolev_s,
     )
 
-    train_module: torch.nn.Module = _LossModule(model, loss_cfg, args.consistency_noise)
+    train_module: torch.nn.Module = _LossModule(
+        model,
+        loss_cfg,
+        args.consistency_noise,
+        args.latent_predictor_hidden,
+    )
     if distributed:
         train_module = DDP(
             train_module,

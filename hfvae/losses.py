@@ -26,6 +26,7 @@ class HFVAELossConfig:
     lambda_wavelet: float = 0.0
     lambda_sobolev: float = 0.0
     lambda_latent_consistency: float = 0.0
+    lambda_latent_prediction: float = 0.0
     lambda_noisy_reconstruction: float = 0.0
     lambda_temporal: float = 0.0
     lambda_vorticity: float = 0.0
@@ -88,6 +89,42 @@ def latent_consistency_target(
     return x + float(noise_std) * noise
 
 
+class LatentTemporalPredictor(torch.nn.Module):
+    """Causal, disposable next-latent predictor initialized as persistence."""
+
+    def __init__(self, channels: int, hidden: int):
+        super().__init__()
+        if channels < 1 or hidden < 1:
+            raise ValueError("channels and hidden must be positive")
+        self.input = torch.nn.Conv3d(channels, hidden, kernel_size=1)
+        self.temporal = torch.nn.Conv3d(hidden, hidden, kernel_size=(3, 1, 1))
+        self.output = torch.nn.Conv3d(hidden, channels, kernel_size=1)
+        # The VAE starts with an exact persistence prediction, then learns the
+        # residual dynamics without changing reconstruction at initialization.
+        torch.nn.init.zeros_(self.output.weight)
+        torch.nn.init.zeros_(self.output.bias)
+
+    def forward(self, history: torch.Tensor) -> torch.Tensor:
+        if history.dim() != 5:
+            raise ValueError(f"expected (B,C,T,H,W), got {tuple(history.shape)}")
+        hidden = F.gelu(self.input(history))
+        hidden = F.pad(hidden, (0, 0, 0, 0, 2, 0))
+        hidden = F.gelu(self.temporal(hidden))
+        return history + self.output(hidden)
+
+
+def latent_prediction_loss(
+    predictor: torch.nn.Module,
+    mu: torch.Tensor,
+) -> torch.Tensor:
+    """Make encoded states predictable from causal history without target collapse."""
+    if mu.shape[2] < 2:
+        return mu.new_zeros(())
+    prediction = predictor(mu[:, :, :-1])
+    target = mu[:, :, 1:].detach()
+    return F.mse_loss(prediction.float(), target.float())
+
+
 def compute_vae_loss(
     model,
     x: torch.Tensor,
@@ -95,6 +132,7 @@ def compute_vae_loss(
     *,
     amp_reparameterize: bool = True,
     latent_consistency_noise: float = 0.05,
+    latent_predictor: torch.nn.Module | None = None,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     mu, log_var = model.encode_dist(x, [0, 1])
     log_var = log_var.clamp(-30, 20)
@@ -180,6 +218,13 @@ def compute_vae_loss(
         cons = F.mse_loss(mu_aug.float(), mu.detach().float())
         loss = loss + cfg.lambda_latent_consistency * cons
         parts["latent_consistency"] = float(cons.detach())
+
+    if cfg.lambda_latent_prediction:
+        if latent_predictor is None:
+            raise ValueError("latent_predictor is required when lambda_latent_prediction is nonzero")
+        prediction = latent_prediction_loss(latent_predictor, mu)
+        loss = loss + cfg.lambda_latent_prediction * prediction
+        parts["latent_prediction"] = float(prediction.detach())
 
     if cfg.lambda_moe_balance:
         balance = model.moe_balance_loss()

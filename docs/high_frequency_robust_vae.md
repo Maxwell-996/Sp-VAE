@@ -709,10 +709,25 @@ global MoE 的 overall 高 `7.73%`，lowpass 也高 `8.29%`。因此该结构不
 `[0.04995, 0.15012, 0.40026]`，八个 expert 的尺度权重全部位于
 `[0.33308, 0.33367]`，几乎没有离开均匀初始化。新增的每 expert local adapter 提供了
 额外条件容量，足以改善 shared local context；但 scale logits 位于 outer zero output 和
-zero-init adapter 之后，早期梯度过弱，未形成可识别的尺度专门化。后续只应测试一种
-优化修正：保持 outer residual 的 identity 初始化，但对 expert-local adapter 和 scale
-logits 做零均值、无语义、可复现的对称性破除初始化；若 scale matrix 仍不分化或 VAE
-未超过 global 基线，则停止这条 local-scale MoE 支线。
+zero-init adapter 之后，早期梯度过弱，未形成可识别的尺度专门化。
+
+该优化修正已被直接检验：在不改变 outer zero residual 的条件下，以 `std=0.5` 对每个
+expert 的 scale logits 做零均值随机扰动，同时以小方差初始化 expert-local adapter。
+tiny metric `robust_val_rel_l2=1.000901341` 虽略优于 fixed local-context 的
+`1.001050122`，但 full-scale `runs/vae_hf_expert_local_seeded_h20_r1` 明确反转：
+
+| expert-local initialization | valid overall rel-L2 | low rel-L2 | mean predicted HF energy |
+| --- | ---: | ---: | ---: |
+| uniform / zero-init | **0.062134694** | **0.060049268** | **1.1835e-5** |
+| seeded symmetry breaking | 0.070303546 | 0.068166288 | 1.3408e-5 |
+
+seeded run 的 eight expert scale mixes 真正分化，分量范围为 `[0.08600, 0.66127]`，但这
+种由随机初值带来的尺度角色并不对应可预测的 NS 细节，overall 恶化 `13.15%`，并增加
+高通能量。它表明“使 expert 看起来多样”不是高频鲁棒性的充分条件；需由重建目标本身
+形成的 differentiable specialization 仍未出现。该初始化实现已通过后续 revert 从工作
+代码移除，artifact 保留用于复核；local-scale MoE 分支至此停止，不进入 downstream
+rollout。当前 retained VAE 仍是 global dense MoE，downstream 则使用其 latent 和
+adaptive coordinate-kernel + fixed learnable local context 的 operator adapter。
 
 ## 参考依据
 

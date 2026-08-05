@@ -71,7 +71,6 @@ def build_model(args) -> WanVAEHF:
         learnable_moe_hidden=args.learnable_moe_hidden,
         learnable_moe_experts=args.learnable_moe_experts,
         learnable_moe_top_k=args.learnable_moe_top_k,
-        learnable_moe_expert_kind=args.learnable_moe_expert_kind,
         learnable_moe_global=args.learnable_moe_global,
         learnable_moe_adaptive_global=args.learnable_moe_adaptive_global,
         learnable_moe_router_inhibition=args.learnable_moe_router_inhibition,
@@ -159,11 +158,6 @@ def main() -> None:
     ap.add_argument("--learnable-moe-hidden", type=int, default=64)
     ap.add_argument("--learnable-moe-experts", type=int, default=4)
     ap.add_argument("--learnable-moe-top-k", type=int, default=2)
-    ap.add_argument(
-        "--learnable-moe-expert-kind",
-        choices=["mlp", "kernel", "adaptive_kernel"],
-        default="mlp",
-    )
     ap.add_argument("--learnable-moe-global", action="store_true")
     ap.add_argument("--learnable-moe-adaptive-global", action="store_true")
     ap.add_argument("--learnable-moe-router-inhibition", action="store_true")

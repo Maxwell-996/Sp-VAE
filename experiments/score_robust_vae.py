@@ -117,8 +117,6 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
                 str(args.moe_experts),
                 "--learnable-moe-top-k",
                 str(args.moe_top_k),
-                "--learnable-moe-expert-kind",
-                args.moe_expert_kind,
                 "--learnable-moe-routing",
                 args.moe_routing,
                 "--learnable-moe-shared-experts",
@@ -268,11 +266,6 @@ def main() -> None:
     parser.add_argument("--moe-hidden", type=int, default=16)
     parser.add_argument("--moe-experts", type=int, default=4)
     parser.add_argument("--moe-top-k", type=int, default=4)
-    parser.add_argument(
-        "--moe-expert-kind",
-        choices=["mlp", "kernel", "adaptive_kernel"],
-        default="mlp",
-    )
     parser.add_argument(
         "--moe-routing", choices=["token_choice", "expert_choice"], default="token_choice"
     )

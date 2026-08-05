@@ -750,6 +750,30 @@ downstream operator adapter，因为它在该层有独立、完整的三 backbon
 进一步说明高频鲁棒性取决于模块位置和训练目标，不能把 operator 的有效 MoE expert
 机械复制到 VAE encoder latent。
 
+### Latent temporal persistence conflicts with VAE reconstruction
+
+为直接优化 embedding 的 NS 自回归可用性，曾在训练期加入轻量因果 predictor，监督
+`mu_{t+1}` 从 `mu_{<=t}` 的预测；target stop-gradient，predictor 本身不写入 VAE
+checkpoint。它初始化为 persistence，因而不改变初始 VAE reconstruction。tiny 4-sample
+测试的 combined metric 从 global MLP 的 `1.000712298` 降至 `1.000595883` (`lambda=0.05`)
+和 `1.000571750` (`lambda=0.01`)，但两个 full-scale run 均反转：
+
+| temporal prediction weight | valid overall rel-L2 | low rel-L2 | mean predicted HF energy |
+| --- | ---: | ---: | ---: |
+| 0, retained global dense MoE | **0.057676648** | **0.055451684** | **1.2347e-5** |
+| 0.01 | 0.061018240 | 0.058938581 | 1.2540e-5 |
+| 0.05 | 0.068271667 | 0.066223126 | 1.3158e-5 |
+
+full data 中 unweighted prediction loss 为约 `0.20-0.24`，即使 `0.01` 也对 reconstruction
+产生稳定冲突；误差从 `0 -> 0.01 -> 0.05` 单调上升。原因是 pointwise temporal
+persistence 不表示 NS 中的空间 advection：它把编码器推向“相同位置缓慢变化”的 latent，
+而不是可由 spatial operator 预测的 transported structure。该 implementation 已在后续
+revert 中移除，full artifacts 保留在 `runs/vae_hf_latent_prediction_h20_r1` 与 `_r2`。
+
+因此 VAE 侧的 direct reconstruction 仍使用 global dense MoE。embedding 的 autoregressive
+质量应在下游 coordinate-kernel operator 中通过多步 rollout objective 测试，而不是把一个
+弱 temporal predictor 反向塞进 encoder。
+
 ## 参考依据
 
 - Deconvolution and Checkerboard Artifacts, Distill 2016: transposed convolution 容易产生棋盘伪影，resize-convolution 是常用替代。
@@ -782,16 +806,16 @@ downstream operator adapter，因为它在该层有独立、完整的三 backbon
 
 ### 下一轮可执行的多模型实验
 
-本轮已经排除逐 token scale gate、expert-local uniform mix、强制随机尺度分化和 VAE
-coordinate-kernel experts。VAE architecture 因此冻结为 retained global dense MoE；继续
-修改 router 或局部尺度将重复已验证的失败模式。优先级调整为：
+本轮已经排除逐 token scale gate、expert-local uniform mix、强制随机尺度分化、VAE
+coordinate-kernel experts 和 latent persistence auxiliary。VAE architecture 因此冻结为
+retained global dense MoE；继续修改 router、局部尺度或 VAE temporal loss 将重复已验证的
+失败模式。优先级调整为：
 
-1. 在 retained VAE 上加入轻量 latent temporal-predictive auxiliary：从历史 latent 预测
-   下一 latent，训练时丢弃 auxiliary head。它直接检验“重建误差较低的表示是否也更适合
-   NS 自回归”，并保留 global dense MoE 作为唯一的 routed capacity。
-2. 仅当该 VAE 同时不劣于 `0.057676648` reconstruction baseline 且提升 latent rollout，
-   才 cache train/valid/test latent 并在 FNO、Transolver、CNextU 的固定 30 epoch / decoded
-   physical rollout 协议下重新评估。
+1. 在 fixed VAE latent 上让 downstream coordinate-kernel operator 直接使用 2-4 step
+   autoregressive rollout loss；它既建模空间 transport，又与最终 decoded physical rollout
+   指标一致。先在固定 seed 的 FNO/Transolver/CNextU protocol 中做 one-step 对照。
+2. 仅当 multi-step training 降低 decoded physical rollout，才扩大 rollout horizon 或改变
+   expert capacity；VAE checkpoint 和 latent cache 不改变，保证改善来自 operator dynamics。
 3. 在 operator 侧保留 adaptive coordinate-kernel + fixed local context，按 backbone 独立
    选择 shared experts：FNO/CNextU 用 1，Transolver 用 4；不要以单一 shared 容量替代
    已验证的 per-backbone 最优配置。

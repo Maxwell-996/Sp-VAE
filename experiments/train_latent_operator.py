@@ -120,6 +120,8 @@ class LatentTrajectoryDataset(Dataset):
         target = z[:, t : t + self.rollout_horizon]
         if self.rollout_horizon == 1:
             target = target[:, 0]
+        else:
+            target = target.permute(1, 0, 2, 3)
         return hist.contiguous(), target.contiguous()
 
 

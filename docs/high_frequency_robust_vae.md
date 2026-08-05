@@ -640,7 +640,7 @@ CNextU) and `runs/ablation_ar2_adaptive_kernel_local_dense8_shared4_r1`
 `0.04778/0.06350`，但完整 rollout 和 decoded physical error 均显著下降；因此该收益
 不是普通的单步拟合提升，而是直接减少了自回归漂移。
 
-对每个 checkpoint 的 16 个 test batch routing diagnostics 表明 dense `top-k=8` 的
+对每个 AR2 checkpoint 的 16 个 test batch routing diagnostics 表明 dense `top-k=8` 的
 hard load 结构性地保持 `0.125`，应以 soft importance 和连续 kernel radius 判断专家
 分工。输出 adapter 的 expert radius ranges 是 FNO `0.104-0.200`、CNextU
 `0.155-0.280`、Transolver `0.093-0.256`，并且 soft importance 显著内容条件化。
@@ -668,6 +668,34 @@ Transolver/CNextU 的默认。完整 artifacts 为
 `runs/ablation_ar3_fno_adaptive_kernel_local_dense8_shared1_r1`,
 `runs/ablation_ar4_fno_adaptive_kernel_local_dense8_shared1_r1`, and
 `runs/ablation_ar5_fno_adaptive_kernel_local_dense8_shared1_r1`.
+
+#### Four-step generalizes across operator backbones
+
+FNO 的 horizon boundary 不足以证明其它 backbone 也适用，因此单独用 retained
+shared capacity 对 Transolver (`4`) 和 CNextU (`1`) 完成了 AR4 full-scale run。三者均
+保持相同 VAE cache、MoE experts、seed、30 epochs 和 240-sample decoded protocol：
+
+| operator | AR2 latent | AR4 latent | change | AR2 physical | AR4 physical | change |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| FNO | 0.139304 | **0.123037** | -11.68% | 0.112228 | **0.100455** | -10.49% |
+| Transolver | 0.225954 | **0.198058** | -12.35% | 0.180126 | **0.154813** | -14.05% |
+| CNextU | 0.146113 | **0.133773** | -8.45% | 0.123542 | **0.112278** | -9.12% |
+| mean | 0.170457 | **0.151623** | -11.05% | 0.138632 | **0.122515** | -11.63% |
+
+这使 AR4 相对 retained one-step MoE 的三模型平均 latent / physical 改善达到
+`26.60% / 24.91%`。相应 artifacts 是
+`runs/ablation_ar4_fno_adaptive_kernel_local_dense8_shared1_r1`,
+`runs/ablation_ar4_transolver_adaptive_kernel_local_dense8_shared4_r1`, and
+`runs/ablation_ar4_cnextu_adaptive_kernel_local_dense8_shared1_r1`。每项 checkpoint
+都有 16-batch routing report：输出 adapter 的 continuous kernel radii 覆盖 FNO
+`0.106-0.226`、Transolver `0.106-0.156`、CNextU `0.131-0.304`，soft importance 仍
+明显非均匀。这再次支持 continuous learned operator specialization，而不是 slot 或
+fixed-frequency partition。
+
+因此当前 downstream retained protocol 是 `--train-rollout-horizon 4` 和
+`--rollout-loss-gamma 1.0`，同时保留 FNO/CNextU `shared=1`、Transolver `shared=4`。
+FNO 的 AR5 negative result 限制了该结论：4 是当前有效默认，不是“任意更长 horizon
+都更好”的规律。
 复现开关为 `--operator-moe-local-context`。
 
 训练和评估代码对旧 checkpoint 做了兼容处理：`operator_moe` 与
@@ -871,15 +899,12 @@ coordinate-kernel experts 和 latent persistence auxiliary。VAE architecture �
 retained global dense MoE；继续修改 router、局部尺度或 VAE temporal loss 将重复已验证的
 失败模式。优先级调整为：
 
-1. 在 fixed VAE latent 上让 downstream coordinate-kernel operator 直接使用 2-4 step
-   autoregressive rollout loss；它既建模空间 transport，又与最终 decoded physical rollout
-   指标一致。先在固定 seed 的 FNO/Transolver/CNextU protocol 中做 one-step 对照。
-2. 仅当 multi-step training 降低 decoded physical rollout，才扩大 rollout horizon 或改变
-   expert capacity；VAE checkpoint 和 latent cache 不改变，保证改善来自 operator dynamics。
-3. 在 operator 侧保留 adaptive coordinate-kernel + fixed local context，按 backbone 独立
-   选择 shared experts：FNO/CNextU 用 1，Transolver 用 4；不要以单一 shared 容量替代
-   已验证的 per-backbone 最优配置。
-4. 对不规则采样只比较支持坐标的 GITO/GNO/GNOT/GINO 类分支，报告 `n_obs`、边界偏置、
+1. 对任何超过 `0.057676648` VAE reconstruction gate 的候选，固定使用 AR4 downstream
+   protocol：adaptive coordinate-kernel + fixed local context，FNO/CNextU 用 1 shared
+   expert，Transolver 用 4。VAE checkpoint 和 latent cache 不改变，保证改善来源可归因。
+2. FNO AR5 已退化，因此不把 horizon 增加视为默认方向；其它 backbone 只有在明确的
+   training-coverage 或 physical-rollout 假设下才测试更长 window。
+3. 对不规则采样只比较支持坐标的 GITO/GNO/GNOT/GINO 类分支，报告 `n_obs`、边界偏置、
    query resolution 和缺失点 mask 的鲁棒性；不把 irregular 点强行 reshape 成 FFT 网格。
 
 最终选择仍然以三层证据为准：VAE 的 low/high reconstruction、latent FNO/Transolver/

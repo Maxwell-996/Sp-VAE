@@ -42,7 +42,6 @@ def main() -> None:
     ap.add_argument("--operator-moe-local-context", action="store_true")
     ap.add_argument("--operator-moe-adaptive-local-mix", action="store_true")
     ap.add_argument("--operator-moe-expert-local-mix", action="store_true")
-    ap.add_argument("--operator-moe-expert-local-init-std", type=float, default=0.0)
     ap.add_argument("--master-port", type=int, default=29943)
     args = ap.parse_args()
 
@@ -122,12 +121,6 @@ def main() -> None:
         train_cmd.append("--operator-moe-adaptive-local-mix")
     if args.operator_moe_expert_local_mix:
         train_cmd.append("--operator-moe-expert-local-mix")
-        train_cmd.extend(
-            [
-                "--operator-moe-expert-local-init-std",
-                str(args.operator_moe_expert_local_init_std),
-            ]
-        )
     subprocess.run(train_cmd, cwd=ROOT, check=True)
 
     jobs = []

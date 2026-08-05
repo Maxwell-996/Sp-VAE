@@ -138,12 +138,6 @@ def train_variant(args: argparse.Namespace, out_dir: Path) -> Path:
                 moe_args.append("--learnable-moe-adaptive-local-mix")
             if args.moe_expert_local_mix:
                 moe_args.append("--learnable-moe-expert-local-mix")
-                moe_args.extend(
-                    [
-                        "--learnable-moe-expert-local-init-std",
-                        str(args.moe_expert_local_init_std),
-                    ]
-                )
             train_args.extend(moe_args)
     else:
         train_args.extend(
@@ -308,7 +302,6 @@ def main() -> None:
         action="store_true",
         help="Let each routed expert learn a static mixture of coordinate-local scales.",
     )
-    parser.add_argument("--moe-expert-local-init-std", type=float, default=0.0)
     parser.add_argument("--lambda-moe-balance", type=float, default=0.01)
     args = parser.parse_args()
 

@@ -37,6 +37,8 @@ def main() -> None:
         default="mlp",
     )
     ap.add_argument("--operator-moe-top-k", type=int, default=2)
+    ap.add_argument("--operator-moe-router-inhibition", action="store_true")
+    ap.add_argument("--operator-moe-local-context", action="store_true")
     ap.add_argument("--master-port", type=int, default=29943)
     args = ap.parse_args()
 
@@ -108,6 +110,10 @@ def main() -> None:
         "--operator-moe-shared-experts",
         "2",
     ]
+    if args.operator_moe_router_inhibition:
+        train_cmd.append("--operator-moe-router-inhibition")
+    if args.operator_moe_local_context:
+        train_cmd.append("--operator-moe-local-context")
     subprocess.run(train_cmd, cwd=ROOT, check=True)
 
     jobs = []

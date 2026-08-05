@@ -129,6 +129,21 @@ class _CoordinateKernelExpert(nn.Module):
             torch.tensor(0.25),
             persistent=False,
         )
+        self.register_buffer(
+            "last_effective_length_scale_std",
+            torch.tensor(0.0),
+            persistent=False,
+        )
+        self.register_buffer(
+            "last_effective_length_scale_min",
+            torch.tensor(0.25),
+            persistent=False,
+        )
+        self.register_buffer(
+            "last_effective_length_scale_max",
+            torch.tensor(0.25),
+            persistent=False,
+        )
         self.output = nn.Sequential(
             nn.LayerNorm(hidden),
             nn.Linear(hidden, hidden * expansion),
@@ -141,6 +156,14 @@ class _CoordinateKernelExpert(nn.Module):
 
     def effective_length_scale(self) -> torch.Tensor:
         return self.last_effective_length_scale
+
+    def effective_length_scale_stats(self) -> list[float]:
+        return [
+            float(self.last_effective_length_scale.detach().cpu()),
+            float(self.last_effective_length_scale_std.detach().cpu()),
+            float(self.last_effective_length_scale_min.detach().cpu()),
+            float(self.last_effective_length_scale_max.detach().cpu()),
+        ]
 
     def forward(
         self,
@@ -167,7 +190,11 @@ class _CoordinateKernelExpert(nn.Module):
             # Zero-initialized modulation preserves the fixed-kernel baseline.
             modulation = 0.5 * torch.tanh(self.radius_router(pooled))
             scale = (scale * modulation.exp()).clamp(1e-3, 4.0)
-        self.last_effective_length_scale.copy_(scale.detach().float().mean())
+        scale_stats = scale.detach().float().reshape(-1)
+        self.last_effective_length_scale.copy_(scale_stats.mean())
+        self.last_effective_length_scale_std.copy_(scale_stats.std(unbiased=False))
+        self.last_effective_length_scale_min.copy_(scale_stats.min())
+        self.last_effective_length_scale_max.copy_(scale_stats.max())
         coordinate_logits = self.coordinate_bias(delta.to(x.dtype)).squeeze(-1)
         logits = content_logits - distance2.to(x.dtype) / (2.0 * scale.square())
         logits = logits + coordinate_logits
@@ -354,6 +381,11 @@ class LearnableTokenMoE(nn.Module):
             ),
             "kernel_scales": (
                 [float(expert.effective_length_scale().detach().cpu()) for expert in self.experts]
+                if self.expert_kind in {"kernel", "adaptive_kernel"}
+                else []
+            ),
+            "kernel_scale_stats": (
+                [expert.effective_length_scale_stats() for expert in self.experts]
                 if self.expert_kind in {"kernel", "adaptive_kernel"}
                 else []
             ),

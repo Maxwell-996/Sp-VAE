@@ -525,9 +525,47 @@ python experiments/score_operator_moe.py \
 ```
 
 这使 coordinate-kernel dense MoE 成为当前所有三种 operator 都占优的默认候选。它的
-代价是 pairwise token kernel 使训练比 MLP expert 更慢，因此下一步应测试以 global
-context 条件化 `\ell_e` 的 CondConv-style adaptive kernel，检验跨 regime 的感受野自适应
-能否在不改变 token 格式的条件下继续改善。
+代价是 pairwise token kernel 使训练比 MLP expert 更慢。
+
+### Adaptive coordinate-kernel experts
+
+进一步把每个 expert 的固定尺度改成由当前有效 token 的全局状态条件化的样本级尺度：
+
+\[
+\ell_e(x)=\operatorname{clip}\left(
+\ell_e\exp\left[0.5\tanh\left(r_e(\operatorname{mean}_{mask} h)\right)\right]
+\right).
+\]
+
+`r_e` 以零初始化，因此初始模型严格退化为 fixed-kernel 配置；它不产生 slot，也不改变
+token 数量、坐标或顺序。此处的条件化只让同一 expert 在不同流态下选择不同的连续感受野。
+
+同一 latent、seed、30 epoch、四卡训练与 240 条 decoded physical rollout 下，结果为：
+
+| expert | FNO physical | Transolver physical | CNextU physical | mean |
+| --- | ---: | ---: | ---: | ---: |
+| fixed coordinate-kernel | **0.145898** | 0.278773 | **0.152251** | 0.192307 |
+| sample-adaptive coordinate-kernel | 0.151548 | **0.251153** | 0.159708 | **0.187469** |
+
+adaptive 使 mean 从 `0.192307` 降到 `0.187469`（`-2.52%`，相对 output-only baseline
+`0.243579` 为 `-23.03%`），但它的收益完全由 Transolver 的 `-9.19%` 驱动；FNO 和
+CNextU 分别退化 `3.87%` 与 `4.90%`。对应 latent test rollout 分别为 FNO `0.197663`、
+Transolver `0.325811`、CNextU `0.190996`，也呈现相同的 backbone-dependent 模式。
+因此它是可保留的 Transolver 候选，而不是固定 coordinate-kernel 的全局替代。
+
+32 个 test batch 的路由诊断证明 adaptive 参数确实被使用：expert 的 soft importance
+明显不均匀，空间层的 learned mean radius 在不同 expert 间跨越约 `0.08-0.57`，且多个
+stage 的样本内 radius standard deviation 为 `0.01-0.03`。CNextU 的两个 `1x1`
+bottleneck stage 保持 `0.250244` 且标准差为 `0`，因为该处已没有可由坐标半径区分的空间
+几何；这与实现预期一致。由于 dense top-8 会使 hard load 恒为均匀 `0.125`，这里以
+soft importance 与 radius statistics，而非 hard load，作为是否发生 learnable expert
+specialization 的证据。复现命令：
+
+```bash
+python experiments/score_operator_moe.py \
+  --operator-moe-top-k 8 \
+  --operator-moe-expert-kind adaptive_kernel
+```
 
 训练和评估代码对旧 checkpoint 做了兼容处理：`operator_moe` 与
 `operator_internal_moe` 是两个独立结构标志，读取缺少新字段的旧 checkpoint 时只

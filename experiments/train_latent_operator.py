@@ -163,6 +163,10 @@ class OperatorInternalMoE(torch.nn.Module):
                     num_experts=getattr(args, "operator_moe_experts", 4),
                     top_k=getattr(args, "operator_moe_top_k", 2),
                     global_context=getattr(args, "operator_moe_global", False),
+                    router_inhibition=getattr(
+                        args, "operator_moe_router_inhibition", False
+                    ),
+                    local_context=getattr(args, "operator_moe_local_context", False),
                     routing=getattr(args, "operator_moe_routing", "token_choice"),
                     expert_kind=getattr(args, "operator_moe_expert_kind", "mlp"),
                     shared_experts=getattr(args, "operator_moe_shared_experts", 1),

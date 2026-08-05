@@ -646,6 +646,28 @@ hard load 结构性地保持 `0.125`，应以 soft importance 和连续 kernel r
 `0.155-0.280`、Transolver `0.093-0.256`，并且 soft importance 显著内容条件化。
 这支持的是 learned continuous operator families，而不是固定 low/mid/high bands 或
 slot semantics。
+
+#### FNO rollout horizon boundary
+
+在相同 FNO、seed、MoE 和 30-epoch protocol 下继续扫描 horizon。随着
+horizon 增长，可用 training origins 会从每条轨迹的 8 (`T=2`) 降为 7、6、5；因此该表
+同时检验更长 closed loop 的收益是否能抵消较少的有效训练样本。
+
+| training horizon | latent test rollout | decoded physical rollout | physical change vs prior horizon |
+| --- | ---: | ---: | ---: |
+| 1, retained one-step | 0.166681 | 0.132042 | - |
+| 2 | 0.139304 | 0.112228 | -15.01% |
+| 3 | 0.131277 | 0.105571 | -5.93% |
+| 4 | **0.123037** | **0.100455** | -4.85% |
+| 5 | 0.134082 | 0.106292 | +5.81% |
+
+`T=4` 将 FNO physical error 相对 one-step 降低 `23.92%`，但 `T=5` 同时损害 latent
+和 physical rollout，且 one-step test error 已升至 `0.07853`。因此当前 FNO 的 retained
+setting 是 `--train-rollout-horizon 4`；不继续增加 horizon，也不把 FNO 的最优值外推为
+Transolver/CNextU 的默认。完整 artifacts 为
+`runs/ablation_ar3_fno_adaptive_kernel_local_dense8_shared1_r1`,
+`runs/ablation_ar4_fno_adaptive_kernel_local_dense8_shared1_r1`, and
+`runs/ablation_ar5_fno_adaptive_kernel_local_dense8_shared1_r1`.
 复现开关为 `--operator-moe-local-context`。
 
 训练和评估代码对旧 checkpoint 做了兼容处理：`operator_moe` 与

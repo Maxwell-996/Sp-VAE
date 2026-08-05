@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train FNO / Transolver / CNextU one-step operators on VAE latent trajectories."""
+"""Train FNO / Transolver / CNextU operators on VAE latent trajectories."""
 
 from __future__ import annotations
 
@@ -44,6 +44,7 @@ class LatentTrajectoryDataset(Dataset):
         max_shards: int | None = None,
         max_samples_per_shard: int | None = None,
         full_rollout: bool = False,
+        rollout_horizon: int = 1,
         use_phys: bool = True,
     ):
         self.root = Path(latent_root).resolve()
@@ -52,6 +53,9 @@ class LatentTrajectoryDataset(Dataset):
         self.manifest = torch.load(self.split_dir / "manifest.pt", map_location="cpu", weights_only=False)
         self.history = int(history)
         self.full_rollout = bool(full_rollout)
+        self.rollout_horizon = int(rollout_horizon)
+        if self.rollout_horizon < 1:
+            raise ValueError("rollout_horizon must be positive")
         self.use_phys = bool(use_phys)
         self.norm = norm_stats or torch.load(self.root / "norm_stats_latent.pt", map_location="cpu", weights_only=False)
         self.mean = torch.tensor(self.norm["mean"], dtype=torch.float32).view(1, -1, 1, 1, 1)
@@ -71,7 +75,13 @@ class LatentTrajectoryDataset(Dataset):
                 self.index.extend((si, li, 0) for li in range(n))
             else:
                 for li in range(n):
-                    self.index.extend((si, li, t) for t in range(self.history, frames))
+                    self.index.extend(
+                        (si, li, t)
+                        for t in range(
+                            self.history,
+                            frames - self.rollout_horizon + 1,
+                        )
+                    )
 
     def _load(self, si: int):
         if si not in self._cache:
@@ -107,7 +117,9 @@ class LatentTrajectoryDataset(Dataset):
         hist = z[:, t - self.history:t].permute(1, 0, 2, 3).reshape(self.history * c, h, w)
         if self.use_phys:
             hist = torch.cat([hist, phys], dim=0)
-        target = z[:, t]
+        target = z[:, t : t + self.rollout_horizon]
+        if self.rollout_horizon == 1:
+            target = target[:, 0]
         return hist.contiguous(), target.contiguous()
 
 
@@ -320,6 +332,84 @@ def eval_one_step(model, loader, device, max_batches: int = 0, distributed: bool
 
 
 @torch.no_grad()
+def eval_short_rollout(
+    model,
+    loader,
+    device,
+    history: int,
+    use_phys: bool,
+    max_batches: int = 0,
+    distributed: bool = False,
+) -> float:
+    """Relative error for a fixed, short autoregressive training window."""
+    model.eval()
+    total = 0.0
+    n = 0
+    for bi, (x, targets) in enumerate(loader):
+        x = x.to(device)
+        targets = targets.to(device)
+        preds = autoregressive_predictions(model, x, targets, history, use_phys)
+        rel = (preds - targets).square().mean().sqrt() / (
+            targets.square().mean().sqrt() + 1e-8
+        )
+        total += float(rel) * x.size(0)
+        n += x.size(0)
+        if max_batches and bi + 1 >= max_batches:
+            break
+    if distributed:
+        stats = torch.tensor([total, n], device=device, dtype=torch.float64)
+        dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+        total, n = stats.tolist()
+    return total / max(n, 1.0)
+
+
+def autoregressive_predictions(
+    model,
+    x: torch.Tensor,
+    targets: torch.Tensor,
+    history: int,
+    use_phys: bool,
+) -> torch.Tensor:
+    """Roll an operator forward from a packed history without teacher forcing."""
+    if targets.dim() == 4:
+        targets = targets.unsqueeze(1)
+    if targets.dim() != 5:
+        raise ValueError(f"expected targets (B,T,C,H,W), got {tuple(targets.shape)}")
+    batch, horizon, channels, height, width = targets.shape
+    history_channels = history * channels
+    if x.shape[1] < history_channels:
+        raise ValueError("packed history has fewer channels than requested")
+    states = x[:, :history_channels].reshape(batch, history, channels, height, width)
+    phys = x[:, history_channels:]
+    predictions = []
+    for _ in range(horizon):
+        model_input = states.reshape(batch, history_channels, height, width)
+        if use_phys:
+            model_input = torch.cat([model_input, phys], dim=1)
+        pred = unwrap_model_output(model(model_input))
+        predictions.append(pred)
+        states = torch.cat((states[:, 1:], pred.unsqueeze(1)), dim=1)
+    return torch.stack(predictions, dim=1)
+
+
+def rollout_mse_loss(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    gamma: float,
+) -> torch.Tensor:
+    """Mean per-step MSE with an optional future-step discount."""
+    if not 0.0 < gamma <= 1.0:
+        raise ValueError("rollout_loss_gamma must be in (0, 1]")
+    if targets.dim() == 4:
+        targets = targets.unsqueeze(1)
+    per_step = (predictions - targets).square().mean(dim=(0, 2, 3, 4))
+    weights = gamma ** torch.arange(
+        per_step.numel(), device=per_step.device, dtype=per_step.dtype
+    )
+    return (per_step * weights).sum() / weights.sum()
+
+
+@torch.no_grad()
 def eval_rollout(
     model,
     loader,
@@ -369,6 +459,18 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--history", type=int, default=4)
+    ap.add_argument(
+        "--train-rollout-horizon",
+        type=int,
+        default=1,
+        help="Autoregressive latent steps in the training loss; 1 preserves one-step training.",
+    )
+    ap.add_argument(
+        "--rollout-loss-gamma",
+        type=float,
+        default=1.0,
+        help="Per-step discount for the rollout loss, in (0, 1].",
+    )
     ap.add_argument("--no-phys", dest="use_phys", action="store_false")
     ap.set_defaults(use_phys=True)
     ap.add_argument("--hidden", type=int, default=64)
@@ -430,6 +532,10 @@ def main() -> None:
         else torch.device("cpu")
     )
     norm = torch.load(Path(args.latent_root) / "norm_stats_latent.pt", map_location="cpu", weights_only=False)
+    if args.train_rollout_horizon < 1:
+        raise ValueError("--train-rollout-horizon must be positive")
+    if not 0.0 < args.rollout_loss_gamma <= 1.0:
+        raise ValueError("--rollout-loss-gamma must be in (0, 1]")
     train_ds = LatentTrajectoryDataset(
         args.latent_root,
         "train",
@@ -437,6 +543,7 @@ def main() -> None:
         norm_stats=norm,
         max_shards=args.max_shards,
         max_samples_per_shard=args.max_samples_per_shard,
+        rollout_horizon=args.train_rollout_horizon,
         use_phys=args.use_phys,
     )
     valid_ds = LatentTrajectoryDataset(
@@ -446,6 +553,7 @@ def main() -> None:
         norm_stats=norm,
         max_shards=args.max_shards,
         max_samples_per_shard=args.max_samples_per_shard,
+        rollout_horizon=args.train_rollout_horizon,
         use_phys=args.use_phys,
     )
     roll_ds = LatentTrajectoryDataset(
@@ -532,7 +640,7 @@ def main() -> None:
     )
     x0, y0 = train_ds[0]
     dim_in, h, w = x0.shape
-    dim_out = y0.shape[0]
+    dim_out = y0.shape[0] if args.train_rollout_horizon == 1 else y0.shape[1]
 
     rows = []
     out_csv = Path(args.out_csv).resolve()
@@ -566,8 +674,14 @@ def main() -> None:
                 x = x.to(device)
                 y = y.to(device)
                 opt.zero_grad(set_to_none=True)
-                pred = unwrap_model_output(train_model(x))
-                loss = F.mse_loss(pred, y)
+                if args.train_rollout_horizon == 1:
+                    pred = unwrap_model_output(train_model(x))
+                    loss = F.mse_loss(pred, y)
+                else:
+                    pred = autoregressive_predictions(
+                        train_model, x, y, args.history, args.use_phys
+                    )
+                    loss = rollout_mse_loss(pred, y, args.rollout_loss_gamma)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(train_model.parameters(), 1.0)
                 opt.step()
@@ -577,9 +691,20 @@ def main() -> None:
                 stats = torch.tensor([tsum, tn], device=device, dtype=torch.float64)
                 dist.all_reduce(stats, op=dist.ReduceOp.SUM)
                 tsum, tn = stats.tolist()
-            val = eval_one_step(
-                train_model, valid_dl, device, args.eval_batches, distributed
-            )
+            if args.train_rollout_horizon == 1:
+                val = eval_one_step(
+                    train_model, valid_dl, device, args.eval_batches, distributed
+                )
+            else:
+                val = eval_short_rollout(
+                    train_model,
+                    valid_dl,
+                    device,
+                    args.history,
+                    args.use_phys,
+                    args.eval_batches,
+                    distributed,
+                )
             if val < best:
                 best = val
                 best_state = {
@@ -610,12 +735,14 @@ def main() -> None:
         )
         row = {
             "model": name,
-            "best_one_step_rel": best,
+            "best_validation_rel": best,
             "test_one_step_rel": test_one_step,
             "rollout_rel": rollout,
             "test_rollout_rel": test_rollout,
             "epochs": args.epochs,
             "history": args.history,
+            "train_rollout_horizon": args.train_rollout_horizon,
+            "rollout_loss_gamma": args.rollout_loss_gamma,
             "seconds": time.time() - t_start,
         }
         if rank == 0:

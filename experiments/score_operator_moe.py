@@ -42,6 +42,8 @@ def main() -> None:
     ap.add_argument("--operator-moe-local-context", action="store_true")
     ap.add_argument("--operator-moe-adaptive-local-mix", action="store_true")
     ap.add_argument("--operator-moe-expert-local-mix", action="store_true")
+    ap.add_argument("--train-rollout-horizon", type=int, default=1)
+    ap.add_argument("--rollout-loss-gamma", type=float, default=1.0)
     ap.add_argument("--master-port", type=int, default=29943)
     args = ap.parse_args()
 
@@ -79,6 +81,10 @@ def main() -> None:
         "5e-4",
         "--history",
         "4",
+        "--train-rollout-horizon",
+        str(args.train_rollout_horizon),
+        "--rollout-loss-gamma",
+        str(args.rollout_loss_gamma),
         "--hidden",
         "64",
         "--layers",

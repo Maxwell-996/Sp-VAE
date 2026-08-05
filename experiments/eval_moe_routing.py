@@ -55,11 +55,13 @@ def main() -> None:
     local_scales = torch.zeros(3, dtype=torch.float64)
     local_mix = torch.zeros(3, dtype=torch.float64)
     local_mix_std = torch.zeros(3, dtype=torch.float64)
+    expert_local_mix = torch.zeros(moe.num_experts, 3, dtype=torch.float64)
     kernel_scales = torch.zeros(moe.num_experts, dtype=torch.float64)
     kernel_scale_stats = torch.zeros(moe.num_experts, 4, dtype=torch.float64)
     global_gate = 0.0
     local_scale_count = 0
     local_mix_count = 0
+    expert_local_mix_count = 0
     kernel_scale_count = 0
     count = 0
     model.eval()
@@ -78,6 +80,11 @@ def main() -> None:
             local_mix += torch.tensor(stats["local_mix"], dtype=torch.float64)
             local_mix_std += torch.tensor(stats["local_mix_std"], dtype=torch.float64)
             local_mix_count += 1
+        if stats["expert_local_mix"]:
+            expert_local_mix += torch.tensor(
+                stats["expert_local_mix"], dtype=torch.float64
+            )
+            expert_local_mix_count += 1
         if stats["kernel_scales"]:
             kernel_scales += torch.tensor(stats["kernel_scales"], dtype=torch.float64)
             kernel_scale_stats += torch.tensor(
@@ -101,6 +108,11 @@ def main() -> None:
         "local_mix": (local_mix / local_mix_count).tolist() if local_mix_count else [],
         "local_mix_std": (
             (local_mix_std / local_mix_count).tolist() if local_mix_count else []
+        ),
+        "expert_local_mix": (
+            (expert_local_mix / expert_local_mix_count).tolist()
+            if expert_local_mix_count
+            else []
         ),
         "kernel_scales": (
             (kernel_scales / kernel_scale_count).tolist() if kernel_scale_count else []

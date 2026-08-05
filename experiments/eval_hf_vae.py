@@ -56,6 +56,7 @@ def build_from_ckpt(path: str, device: torch.device) -> tuple[WanVAEHF, dict]:
         learnable_moe_router_inhibition=a.get("learnable_moe_router_inhibition", False),
         learnable_moe_local_context=a.get("learnable_moe_local_context", False),
         learnable_moe_adaptive_local_mix=a.get("learnable_moe_adaptive_local_mix", False),
+        learnable_moe_expert_local_mix=a.get("learnable_moe_expert_local_mix", False),
         learnable_moe_routing=a.get("learnable_moe_routing", "token_choice"),
         learnable_moe_shared_experts=a.get("learnable_moe_shared_experts", 1),
         learnable_moe_router_noise=a.get("learnable_moe_router_noise", 0.0),

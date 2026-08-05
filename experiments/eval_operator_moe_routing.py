@@ -77,6 +77,12 @@ def evaluate(args: argparse.Namespace) -> dict:
             "local_mix_std": torch.zeros(
                 3 if module.local_scale_mixer is not None else 0, dtype=torch.float64
             ),
+            "expert_local_mix": torch.zeros(
+                (module.num_experts, 3)
+                if module.expert_local_mix_logits is not None
+                else (0, 3),
+                dtype=torch.float64,
+            ),
             "kernel_scales": torch.zeros(module.num_experts, dtype=torch.float64),
             "kernel_scale_std": torch.zeros(module.num_experts, dtype=torch.float64),
             "kernel_scale_min": torch.zeros(module.num_experts, dtype=torch.float64),
@@ -109,6 +115,11 @@ def evaluate(args: argparse.Namespace) -> dict:
             if local_mix_std:
                 totals[name]["local_mix_std"] += torch.tensor(
                     local_mix_std, dtype=torch.float64
+                )
+            expert_local_mix = stats.get("expert_local_mix", [])
+            if expert_local_mix:
+                totals[name]["expert_local_mix"] += torch.tensor(
+                    expert_local_mix, dtype=torch.float64
                 )
             scales = stats.get("kernel_scales", [])
             if scales:
@@ -150,6 +161,11 @@ def evaluate(args: argparse.Namespace) -> dict:
                 "local_mix_std": (
                     (values["local_mix_std"] / max(batches, 1)).tolist()
                     if module.local_scale_mixer is not None
+                    else []
+                ),
+                "expert_local_mix": (
+                    (values["expert_local_mix"] / max(batches, 1)).tolist()
+                    if module.expert_local_mix_logits is not None
                     else []
                 ),
                 "kernel_scales": (

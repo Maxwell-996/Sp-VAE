@@ -232,6 +232,7 @@ class LearnableTokenMoE(nn.Module):
         router_inhibition: bool = False,
         local_context: bool = False,
         adaptive_local_mix: bool = False,
+        expert_local_mix: bool = False,
         routing: str = "token_choice",
         expert_kind: str = "mlp",
         shared_experts: int = 1,
@@ -265,6 +266,7 @@ class LearnableTokenMoE(nn.Module):
         self.router_inhibition = bool(router_inhibition)
         self.local_context_enabled = bool(local_context)
         self.adaptive_local_mix = bool(local_context and adaptive_local_mix)
+        self.expert_local_mix = bool(local_context and expert_local_mix)
         self.input = nn.Sequential(
             nn.LayerNorm(channels + 3),
             nn.Linear(channels + 3, hidden),
@@ -330,10 +332,24 @@ class LearnableTokenMoE(nn.Module):
             if self.adaptive_local_mix
             else None
         )
+        self.expert_local_mix_logits = (
+            nn.Parameter(torch.zeros(num_experts, 3)) if self.expert_local_mix else None
+        )
+        self.expert_local = nn.ModuleList(
+            [
+                nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, hidden))
+                for _ in range(num_experts)
+            ]
+            if self.expert_local_mix
+            else []
+        )
         for adapter in (self.local_router, self.local_expert, self.local_scale_mixer):
             if adapter is not None:
                 nn.init.zeros_(adapter[-1].weight)
                 nn.init.zeros_(adapter[-1].bias)
+        for adapter in self.expert_local:
+            nn.init.zeros_(adapter[-1].weight)
+            nn.init.zeros_(adapter[-1].bias)
         self.output = nn.Linear(hidden, channels)
         nn.init.zeros_(self.output.weight)
         nn.init.zeros_(self.output.bias)
@@ -352,6 +368,11 @@ class LearnableTokenMoE(nn.Module):
         self.register_buffer(
             "last_local_mix_std",
             torch.zeros(3),
+            persistent=False,
+        )
+        self.register_buffer(
+            "last_expert_local_mix",
+            torch.full((num_experts, 3), 1.0 / 3.0),
             persistent=False,
         )
 
@@ -409,6 +430,11 @@ class LearnableTokenMoE(nn.Module):
                 if self.local_scale_mixer is not None
                 else []
             ),
+            "expert_local_mix": (
+                self.last_expert_local_mix.detach().cpu().tolist()
+                if self.expert_local_mix_logits is not None
+                else []
+            ),
             "kernel_scales": (
                 [float(expert.effective_length_scale().detach().cpu()) for expert in self.experts]
                 if self.expert_kind in {"kernel", "adaptive_kernel"}
@@ -427,7 +453,7 @@ class LearnableTokenMoE(nn.Module):
         coords: torch.Tensor,
         mask: torch.Tensor,
         pooled_tokens: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Aggregate learnable-radius coordinate neighborhoods without reshaping."""
         coords_f = coords.float()
         distance2 = torch.cdist(coords_f, coords_f).square()
@@ -440,7 +466,7 @@ class LearnableTokenMoE(nn.Module):
         neighborhood = torch.einsum("bsij,bjh->bsih", weights, features.float())
         deltas = neighborhood - features.float().unsqueeze(1)
         if self.local_scale_mixer is None:
-            return deltas.mean(dim=1).to(features.dtype)
+            return deltas.mean(dim=1).to(features.dtype), deltas.to(features.dtype)
 
         local_logits = self.local_scale_mixer(
             torch.cat((features, pooled_tokens), dim=-1)
@@ -450,7 +476,10 @@ class LearnableTokenMoE(nn.Module):
         if valid_mix.numel():
             self.last_local_mix.copy_(valid_mix.detach().float().mean(dim=0))
             self.last_local_mix_std.copy_(valid_mix.detach().float().std(dim=0, unbiased=False))
-        return torch.einsum("bns,bsnh->bnh", local_mix, deltas).to(features.dtype)
+        return (
+            torch.einsum("bns,bsnh->bnh", local_mix, deltas).to(features.dtype),
+            deltas.to(features.dtype),
+        )
 
     def forward(
         self,
@@ -472,10 +501,10 @@ class LearnableTokenMoE(nn.Module):
         pooled = (features * valid).sum(dim=1, keepdim=True) / denom
         pooled = self.context(pooled)
         pooled_tokens = pooled.expand(-1, n, -1)
-        local_delta = (
+        local_delta, local_deltas = (
             self._local_delta(features, coords, mask, pooled_tokens)
             if self.local_context_enabled
-            else None
+            else (None, None)
         )
         expert_features = (
             features + self.local_expert(local_delta)
@@ -531,10 +560,20 @@ class LearnableTokenMoE(nn.Module):
                 selection.fill_(1.0)
                 gates = dense_gates
 
+        if self.expert_local_mix_logits is not None and local_deltas is not None:
+            expert_local_mix = torch.softmax(self.expert_local_mix_logits, dim=-1)
+            self.last_expert_local_mix.copy_(expert_local_mix.detach())
+            expert_deltas = torch.einsum("es,bsnh->benh", expert_local_mix, local_deltas)
+            expert_inputs = [
+                expert_features + adapter(expert_deltas[:, index])
+                for index, adapter in enumerate(self.expert_local)
+            ]
+        else:
+            expert_inputs = [expert_features] * self.num_experts
         expert_values = torch.stack(
             [
-                expert(expert_features, coords=coords, mask=mask)
-                for expert in self.experts
+                expert(expert_input, coords=coords, mask=mask)
+                for expert, expert_input in zip(self.experts, expert_inputs)
             ],
             dim=2,
         )

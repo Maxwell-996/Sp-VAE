@@ -590,6 +590,20 @@ hard load 仍为均匀 `0.125`，global gate 平均值为 `0.4930`；这说明 g
 收益只有 `1.6e-6`，低于当前 tiny 实验的可辨识范围。因此该实现保留为下一轮候选，
 暂不进行昂贵的四卡 full-scale 训练。
 
+在 full-scale operator protocol 中真正接入 internal adapters 后，local-contrast
+router 的结果如下：
+
+| configuration | FNO physical | Transolver physical | CNextU physical | mean |
+| --- | ---: | ---: | ---: | ---: |
+| sample-adaptive coordinate-kernel | 0.151548 | 0.251153 | 0.159708 | **0.187469** |
+| + router inhibition | 0.153828 | 0.258524 | 0.170696 | 0.194349 |
+
+它相对 adaptive baseline 退化 `3.67%`，相对 fixed coordinate-kernel 也退化 `1.06%`。
+这与 tiny benchmark 的微小正向差异不一致，说明在 NS rollout 中 pooled absolute state
+包含重要的 regime/amplitude 条件；仅把路由输入改成 `features-pooled(features)` 会
+损失这部分信息。该失败配置不再作为默认候选，复现开关为
+`--operator-moe-router-inhibition`。
+
 ## 参考依据
 
 - Deconvolution and Checkerboard Artifacts, Distill 2016: transposed convolution 容易产生棋盘伪影，resize-convolution 是常用替代。

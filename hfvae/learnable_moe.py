@@ -233,6 +233,7 @@ class LearnableTokenMoE(nn.Module):
         local_context: bool = False,
         adaptive_local_mix: bool = False,
         expert_local_mix: bool = False,
+        expert_local_init_std: float = 0.0,
         routing: str = "token_choice",
         expert_kind: str = "mlp",
         shared_experts: int = 1,
@@ -253,6 +254,8 @@ class LearnableTokenMoE(nn.Module):
             raise ValueError("shared_experts must be positive")
         if router_noise_std < 0:
             raise ValueError("router_noise_std must be non-negative")
+        if expert_local_init_std < 0:
+            raise ValueError("expert_local_init_std must be non-negative")
         self.channels = int(channels)
         self.hidden = int(hidden)
         self.num_experts = int(num_experts)
@@ -267,6 +270,7 @@ class LearnableTokenMoE(nn.Module):
         self.local_context_enabled = bool(local_context)
         self.adaptive_local_mix = bool(local_context and adaptive_local_mix)
         self.expert_local_mix = bool(local_context and expert_local_mix)
+        self.expert_local_init_std = float(expert_local_init_std)
         self.input = nn.Sequential(
             nn.LayerNorm(channels + 3),
             nn.Linear(channels + 3, hidden),
@@ -348,8 +352,21 @@ class LearnableTokenMoE(nn.Module):
                 nn.init.zeros_(adapter[-1].weight)
                 nn.init.zeros_(adapter[-1].bias)
         for adapter in self.expert_local:
-            nn.init.zeros_(adapter[-1].weight)
+            if self.expert_local_init_std:
+                nn.init.normal_(
+                    adapter[-1].weight,
+                    std=self.expert_local_init_std / math.sqrt(hidden),
+                )
+            else:
+                nn.init.zeros_(adapter[-1].weight)
             nn.init.zeros_(adapter[-1].bias)
+        if self.expert_local_mix_logits is not None and self.expert_local_init_std:
+            # Break the scale symmetry without assigning experts any named bands.
+            with torch.no_grad():
+                self.expert_local_mix_logits.normal_(std=self.expert_local_init_std)
+                self.expert_local_mix_logits.sub_(
+                    self.expert_local_mix_logits.mean(dim=-1, keepdim=True)
+                )
         self.output = nn.Linear(hidden, channels)
         nn.init.zeros_(self.output.weight)
         nn.init.zeros_(self.output.bias)

@@ -140,6 +140,7 @@ class OperatorMoEAdapter(torch.nn.Module):
             local_context=getattr(args, "operator_moe_local_context", False),
             adaptive_local_mix=getattr(args, "operator_moe_adaptive_local_mix", False),
             expert_local_mix=getattr(args, "operator_moe_expert_local_mix", False),
+            expert_local_init_std=getattr(args, "operator_moe_expert_local_init_std", 0.0),
             routing=getattr(args, "operator_moe_routing", "token_choice"),
             expert_kind=getattr(args, "operator_moe_expert_kind", "mlp"),
             shared_experts=getattr(args, "operator_moe_shared_experts", 1),
@@ -174,6 +175,9 @@ class OperatorInternalMoE(torch.nn.Module):
                     ),
                     expert_local_mix=getattr(
                         args, "operator_moe_expert_local_mix", False
+                    ),
+                    expert_local_init_std=getattr(
+                        args, "operator_moe_expert_local_init_std", 0.0
                     ),
                     routing=getattr(args, "operator_moe_routing", "token_choice"),
                     expert_kind=getattr(args, "operator_moe_expert_kind", "mlp"),
@@ -404,6 +408,7 @@ def main() -> None:
     ap.add_argument("--operator-moe-local-context", action="store_true")
     ap.add_argument("--operator-moe-adaptive-local-mix", action="store_true")
     ap.add_argument("--operator-moe-expert-local-mix", action="store_true")
+    ap.add_argument("--operator-moe-expert-local-init-std", type=float, default=0.0)
     ap.add_argument("--operator-moe-shared-experts", type=int, default=1)
     ap.add_argument("--operator-moe-router-noise", type=float, default=0.0)
     ap.add_argument("--max-shards", type=int, default=None)

@@ -52,7 +52,15 @@ def main() -> None:
     )
     importance = torch.zeros(moe.num_experts, dtype=torch.float64)
     load = torch.zeros_like(importance)
+    local_scales = torch.zeros(3, dtype=torch.float64)
+    local_mix = torch.zeros(3, dtype=torch.float64)
+    local_mix_std = torch.zeros(3, dtype=torch.float64)
+    kernel_scales = torch.zeros(moe.num_experts, dtype=torch.float64)
+    kernel_scale_stats = torch.zeros(moe.num_experts, 4, dtype=torch.float64)
     global_gate = 0.0
+    local_scale_count = 0
+    local_mix_count = 0
+    kernel_scale_count = 0
     count = 0
     model.eval()
     for bi, x in enumerate(dl):
@@ -63,6 +71,19 @@ def main() -> None:
         importance += torch.tensor(stats["importance"], dtype=torch.float64)
         load += torch.tensor(stats["load"], dtype=torch.float64)
         global_gate += float(stats.get("global_gate", [0.0])[0])
+        if stats["local_scales"]:
+            local_scales += torch.tensor(stats["local_scales"], dtype=torch.float64)
+            local_scale_count += 1
+        if stats["local_mix"]:
+            local_mix += torch.tensor(stats["local_mix"], dtype=torch.float64)
+            local_mix_std += torch.tensor(stats["local_mix_std"], dtype=torch.float64)
+            local_mix_count += 1
+        if stats["kernel_scales"]:
+            kernel_scales += torch.tensor(stats["kernel_scales"], dtype=torch.float64)
+            kernel_scale_stats += torch.tensor(
+                stats["kernel_scale_stats"], dtype=torch.float64
+            )
+            kernel_scale_count += 1
         count += 1
         if args.max_batches and bi + 1 >= args.max_batches:
             break
@@ -74,6 +95,21 @@ def main() -> None:
         "load": (load / max(count, 1)).tolist(),
         "temperature": float(moe.log_temperature.exp().detach().cpu()),
         "global_gate": global_gate / max(count, 1),
+        "local_scales": (
+            (local_scales / local_scale_count).tolist() if local_scale_count else []
+        ),
+        "local_mix": (local_mix / local_mix_count).tolist() if local_mix_count else [],
+        "local_mix_std": (
+            (local_mix_std / local_mix_count).tolist() if local_mix_count else []
+        ),
+        "kernel_scales": (
+            (kernel_scales / kernel_scale_count).tolist() if kernel_scale_count else []
+        ),
+        "kernel_scale_stats": (
+            (kernel_scale_stats / kernel_scale_count).tolist()
+            if kernel_scale_count
+            else []
+        ),
     }
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

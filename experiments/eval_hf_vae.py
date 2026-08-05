@@ -51,6 +51,7 @@ def build_from_ckpt(path: str, device: torch.device) -> tuple[WanVAEHF, dict]:
         learnable_moe_hidden=a.get("learnable_moe_hidden", 64),
         learnable_moe_experts=a.get("learnable_moe_experts", 4),
         learnable_moe_top_k=a.get("learnable_moe_top_k", 2),
+        learnable_moe_expert_kind=a.get("learnable_moe_expert_kind", "mlp"),
         learnable_moe_global=a.get("learnable_moe_global", False),
         learnable_moe_adaptive_global=a.get("learnable_moe_adaptive_global", False),
         learnable_moe_router_inhibition=a.get("learnable_moe_router_inhibition", False),

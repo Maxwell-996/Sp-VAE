@@ -468,19 +468,66 @@ experts、global context 和 all-stage internal MoE 配置下，只把路由从
 
 | routing | FNO physical | Transolver physical | CNextU physical | mean |
 | --- | ---: | ---: | ---: | ---: |
-| token-choice | **0.166324** | 0.378130 | **0.158129** | **0.234194** |
-| expert-choice | 0.189372 | **0.365875** | 0.167789 | 0.241012 |
-| dense token-choice (`top-k=8`) | **0.164974** | **0.325435** | 0.175491 | **0.221967** |
+| token-choice | 0.166324 | 0.378130 | 0.158129 | 0.234194 |
+| expert-choice | 0.189372 | 0.365875 | 0.167789 | 0.241012 |
+| dense MLP token-choice (`top-k=8`) | 0.164974 | 0.325435 | 0.175491 | 0.221967 |
+| dense coordinate-kernel (`top-k=8`) | **0.145898** | **0.278773** | **0.152251** | **0.192307** |
 
 expert-choice 相比 output-only baseline 的 mean `0.243579` 仍有小幅改善，但比
 token-choice hidden MoE 的 `0.234194` 差 `2.91%`。它只改善了 Transolver，FNO 和
 CNextU 均退化，说明固定 expert 容量不是当前规则网格 NS latent 的通用高频先验。
-相反，dense token-choice 让每个 token 对 8 个 expert 使用连续 softmax 权重，三模型
+相反，dense MLP token-choice 让每个 token 对 8 个 expert 使用连续 softmax 权重，三模型
 mean 从 `0.234194` 降到 `0.221967`，相对改善 `5.22%`；其中 Transolver 改善最大，
-但 CNextU 从 `0.158129` 退化到 `0.175491`。因此三模型平均配置优先考虑 dense8，
-CNextU 专用配置仍保留 hard top-2；scorer 默认仍为 top-2，dense 配置通过
-`--operator-moe-top-k 8` 复现。该结果支持“可学习的连续专家组合”比固定 expert
+但 CNextU 从 `0.158129` 退化到 `0.175491`。这说明仅对逐 token MLP experts，CNextU
+偏好 hard top-2；该判断不应外推到不同的专家函数。scorer 默认仍为 top-2，dense 配置
+通过 `--operator-moe-top-k 8` 复现。该结果支持“可学习的连续专家组合”比固定 expert
 容量更有潜力，但不支持任何一种路由对所有 backbone 都普适。
+
+### Coordinate-kernel experts
+
+此前 routed expert 只是逐 token MLP，因而 dense routing 的收益可能只来自更大的
+逐点容量。受 CondConv 的条件化 kernel bank、Kernel Neural Operator 和 spatially
+conditioned neural-operator MoE 启发，将 routed experts 改为坐标条件 kernel
+operator，其 shared/global expert、router、8 experts、top-k=8、训练预算和 VAE latent
+全部保持不变。对 token `i,j`，expert `e` 的消息权重为
+
+\[
+a_{ij}^{(e)}=\operatorname{softmax}_j\left(
+q_i^{(e)\top}k_j^{(e)}/\sqrt d
+-\frac{\|c_i-c_j\|^2}{2\ell_e^2}
++ b_e(c_i-c_j)\right),
+\qquad
+E_e(h_i)=\operatorname{MLP}_e\left(h_i+\sum_j a_{ij}^{(e)}V_e(h_j)\right).
+\]
+
+`\ell_e` 和相对坐标 bias 都是可学习的；该形式可以直接接受 arbitrary
+`(value, coords, mask)` token，不预设规则网格、Fourier mode 或 slot。外部 residual
+projection 仍为 zero-init，所以新 adapter 在初始化时严格等于原 operator。
+
+在 `hf_ddp_global8` latent、seed=3407、30 epochs、四卡训练、240 条 test trajectory
+decoded physical rollout 的完整对照中，kernel experts 对三种 backbone 均改善：FNO
+从 `0.164974` 到 `0.145898`（-11.56%），Transolver 从 `0.325435` 到 `0.278773`
+（-14.34%），CNextU 从 `0.175491` 到 `0.152251`（-13.24%）；mean 从 `0.221967`
+到当前最佳 `0.192307`（-13.36%，相对 output-only baseline `0.243579` 为 -21.05%）。
+对应 latent test rollout 是 FNO `0.193217`、Transolver `0.350143`、CNextU
+`0.179408`，也全部优于 dense MLP。
+
+路由诊断在 32 个 test batch 上显示，FNO/Transolver 的 internal experts 同时出现
+非均匀 importance 和不同有效半径：FNO 约 `0.10-0.29`，Transolver 约 `0.11-0.28`。
+这不是 uniform expert averaging。CNextU 的两个 `1x1` bottleneck stage 保持初始
+`0.25` 半径，符合该空间分辨率下坐标距离无法提供额外信息的预期；其他 stage 仍产生
+内容条件路由和可学习尺度。复现实验使用：
+
+```bash
+python experiments/score_operator_moe.py \
+  --operator-moe-top-k 8 \
+  --operator-moe-expert-kind kernel
+```
+
+这使 coordinate-kernel dense MoE 成为当前所有三种 operator 都占优的默认候选。它的
+代价是 pairwise token kernel 使训练比 MLP expert 更慢，因此下一步应测试以 global
+context 条件化 `\ell_e` 的 CondConv-style adaptive kernel，检验跨 regime 的感受野自适应
+能否在不改变 token 格式的条件下继续改善。
 
 训练和评估代码对旧 checkpoint 做了兼容处理：`operator_moe` 与
 `operator_internal_moe` 是两个独立结构标志，读取缺少新字段的旧 checkpoint 时只
@@ -525,6 +572,8 @@ hard load 仍为均匀 `0.125`，global gate 平均值为 `0.4930`；这说明 g
 - [Expert Choice Routing](https://arxiv.org/abs/2202.09368): 由 expert 选择固定容量 token，避免 token-choice 的容量竞争。
 - [DeepSeekMoE](https://arxiv.org/abs/2401.06066): fine-grained routed experts 加 shared experts，提升组合式专家专门化。
 - [NESTOR](https://arxiv.org/abs/2602.22059): 以 shared/global/local 层级构造 nested MoE neural operator。
+- [Mixture of Neural Operator Experts](https://arxiv.org/abs/2502.04562): 用空间条件 MoE
+  处理边界条件与模型选择，是 coordinate-kernel expert 的直接结构动机。
 - [U-HNO / SPAR](https://arxiv.org/abs/2605.12965): 学习每个位置在 global Fourier 与 local multi-scale Gaussian 分支之间的分配，是 adaptive global/local 实验的直接动机。
 - [Neural Inhibition](https://arxiv.org/abs/2507.03221): 通过抑制 router 中跨模式共享的公共信号促进 expert specialization，可作为下一轮路由正则化候选。
 - [ABLE](https://arxiv.org/abs/2605.10451): 学习数据相关的 Parseval frame，说明固定 Fourier basis 的限制可以从“学习基底”而不只是“增加 modes”来缓解。

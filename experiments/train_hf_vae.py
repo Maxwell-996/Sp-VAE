@@ -39,7 +39,9 @@ class _LossModule(torch.nn.Module):
         self.loss_cfg = loss_cfg
         self.noise = noise
         self.latent_predictor = (
-            LatentTemporalPredictor(model.z_dim, latent_predictor_hidden)
+            LatentTemporalPredictor(model.z_dim, latent_predictor_hidden).to(
+                next(model.parameters()).device
+            )
             if loss_cfg.lambda_latent_prediction
             else None
         )

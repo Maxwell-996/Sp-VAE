@@ -80,8 +80,74 @@ class _Expert(nn.Module):
             nn.Linear(hidden * expansion, hidden),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        *,
+        coords: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         return self.net(x)
+
+
+class _CoordinateKernelExpert(nn.Module):
+    """Content- and coordinate-conditioned kernel operator for arbitrary tokens."""
+
+    def __init__(self, hidden: int, expansion: int = 2):
+        super().__init__()
+        attention_hidden = max(8, hidden // 2)
+        self.query_norm = nn.LayerNorm(hidden)
+        self.key_norm = nn.LayerNorm(hidden)
+        self.query = nn.Linear(hidden, attention_hidden, bias=False)
+        self.key = nn.Linear(hidden, attention_hidden, bias=False)
+        self.value = nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, hidden))
+        self.coordinate_bias = nn.Sequential(
+            nn.Linear(3, attention_hidden),
+            nn.GELU(),
+            nn.Linear(attention_hidden, 1),
+        )
+        # Begin with an isotropic learned-radius kernel. The residual adapter
+        # remains an exact identity because LearnableTokenMoE.output is zero.
+        nn.init.zeros_(self.coordinate_bias[-1].weight)
+        nn.init.zeros_(self.coordinate_bias[-1].bias)
+        self.log_length_scale = nn.Parameter(torch.tensor(math.log(0.25)))
+        self.output = nn.Sequential(
+            nn.LayerNorm(hidden),
+            nn.Linear(hidden, hidden * expansion),
+            nn.GELU(),
+            nn.Linear(hidden * expansion, hidden),
+        )
+
+    def length_scale(self) -> torch.Tensor:
+        return self.log_length_scale.exp().clamp(1e-3, 4.0)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        *,
+        coords: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if coords is None or mask is None:
+            raise ValueError("coordinate kernel experts require coords and mask")
+        query = self.query(self.query_norm(x))
+        key = self.key(self.key_norm(x))
+        content_logits = torch.einsum("bih,bjh->bij", query, key)
+        content_logits = content_logits / math.sqrt(query.shape[-1])
+
+        delta = coords[:, :, None, :].float() - coords[:, None, :, :].float()
+        distance2 = delta.square().sum(dim=-1)
+        scale = self.length_scale().float()
+        coordinate_logits = self.coordinate_bias(delta.to(x.dtype)).squeeze(-1)
+        logits = content_logits - distance2.to(x.dtype) / (2.0 * scale.square())
+        logits = logits + coordinate_logits
+        key_valid = mask[:, None, :]
+        logits = logits.masked_fill(~key_valid, torch.finfo(logits.dtype).min)
+        has_valid_key = mask.any(dim=1, keepdim=True).unsqueeze(-1)
+        safe_logits = torch.where(has_valid_key, logits, torch.zeros_like(logits))
+        weights = torch.softmax(safe_logits, dim=-1) * mask[:, :, None].to(x.dtype)
+        message = torch.einsum("bij,bjh->bih", weights, self.value(x))
+        return self.output(x + message)
 
 
 class LearnableTokenMoE(nn.Module):
@@ -109,6 +175,7 @@ class LearnableTokenMoE(nn.Module):
         router_inhibition: bool = False,
         local_context: bool = False,
         routing: str = "token_choice",
+        expert_kind: str = "mlp",
         shared_experts: int = 1,
         router_noise_std: float = 0.0,
     ):
@@ -121,6 +188,8 @@ class LearnableTokenMoE(nn.Module):
             raise ValueError("top_k must satisfy 1 <= top_k <= num_experts")
         if routing not in {"token_choice", "expert_choice"}:
             raise ValueError("routing must be token_choice or expert_choice")
+        if expert_kind not in {"mlp", "kernel"}:
+            raise ValueError("expert_kind must be mlp or kernel")
         if shared_experts < 1:
             raise ValueError("shared_experts must be positive")
         if router_noise_std < 0:
@@ -130,6 +199,7 @@ class LearnableTokenMoE(nn.Module):
         self.num_experts = int(num_experts)
         self.top_k = int(top_k)
         self.routing = routing
+        self.expert_kind = expert_kind
         self.shared_experts = int(shared_experts)
         self.router_noise_std = float(router_noise_std)
         self.global_context_enabled = bool(global_context)
@@ -150,8 +220,9 @@ class LearnableTokenMoE(nn.Module):
             nn.LayerNorm(hidden * 2),
             nn.Linear(hidden * 2, num_experts),
         )
+        expert_cls = _CoordinateKernelExpert if expert_kind == "kernel" else _Expert
         self.experts = nn.ModuleList(
-            [_Expert(hidden, expansion=expansion) for _ in range(num_experts)]
+            [expert_cls(hidden, expansion=expansion) for _ in range(num_experts)]
         )
         self.shared = _Expert(hidden, expansion=expansion)
         self.shared_extra = nn.ModuleList(
@@ -241,6 +312,11 @@ class LearnableTokenMoE(nn.Module):
             "local_scales": (
                 self.local_log_scales.detach().exp().cpu().tolist()
                 if self.local_log_scales is not None
+                else []
+            ),
+            "kernel_scales": (
+                [float(expert.length_scale().detach().cpu()) for expert in self.experts]
+                if self.expert_kind == "kernel"
                 else []
             ),
         }
@@ -342,7 +418,13 @@ class LearnableTokenMoE(nn.Module):
                 selection.fill_(1.0)
                 gates = dense_gates
 
-        expert_values = torch.stack([expert(expert_features) for expert in self.experts], dim=2)
+        expert_values = torch.stack(
+            [
+                expert(expert_features, coords=coords, mask=mask)
+                for expert in self.experts
+            ],
+            dim=2,
+        )
         routed_value = torch.einsum("bne,bneh->bnh", gates, expert_values)
         shared_values = [self.shared(expert_features)]
         shared_values.extend(expert(expert_features) for expert in self.shared_extra)

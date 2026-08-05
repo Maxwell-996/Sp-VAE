@@ -139,6 +139,7 @@ class OperatorMoEAdapter(torch.nn.Module):
             router_inhibition=getattr(args, "operator_moe_router_inhibition", False),
             local_context=getattr(args, "operator_moe_local_context", False),
             routing=getattr(args, "operator_moe_routing", "token_choice"),
+            expert_kind=getattr(args, "operator_moe_expert_kind", "mlp"),
             shared_experts=getattr(args, "operator_moe_shared_experts", 1),
             router_noise_std=getattr(args, "operator_moe_router_noise", 0.0),
         )
@@ -163,6 +164,7 @@ class OperatorInternalMoE(torch.nn.Module):
                     top_k=getattr(args, "operator_moe_top_k", 2),
                     global_context=getattr(args, "operator_moe_global", False),
                     routing=getattr(args, "operator_moe_routing", "token_choice"),
+                    expert_kind=getattr(args, "operator_moe_expert_kind", "mlp"),
                     shared_experts=getattr(args, "operator_moe_shared_experts", 1),
                     router_noise_std=getattr(args, "operator_moe_router_noise", 0.0),
                 )
@@ -380,6 +382,11 @@ def main() -> None:
         "--operator-moe-routing",
         choices=["token_choice", "expert_choice"],
         default="token_choice",
+    )
+    ap.add_argument(
+        "--operator-moe-expert-kind",
+        choices=["mlp", "kernel"],
+        default="mlp",
     )
     ap.add_argument("--operator-moe-router-inhibition", action="store_true")
     ap.add_argument("--operator-moe-local-context", action="store_true")

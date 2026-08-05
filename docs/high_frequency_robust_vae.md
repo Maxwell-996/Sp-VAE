@@ -647,6 +647,38 @@ router 的结果如下：
 损失这部分信息。该失败配置不再作为默认候选，复现开关为
 `--operator-moe-router-inhibition`。
 
+### VAE token-wise adaptive local mixing: retained negative result
+
+`adaptive_local_mix` 不新增或重排 token。它从三个连续的可学习坐标邻域差分中，按
+token feature 和 pooled state 预测 softmax 权重；最后一层从零初始化，因此初始化时
+严格等价于固定的均匀 local-context。该实验直接检验“让每个 latent token 自行选择
+局部尺度”是否能改善 Wan VAE 的重建，而不是把尺度解释为 slot 或固定频带。
+
+全量 `data_128`、1200 train / 240 valid、4 x H20、1 epoch、相同 Wan 初始化和损失
+下，`runs/vae_hf_adaptive_local_mix_h20_r2` 的训练用时 `775.5s`，结果如下。所有
+行都用相同的 valid split、`low=0.10`、`high=0.15` 和 transition `0.04` 评估：
+
+| VAE latent MoE | valid overall rel-L2 | low rel-L2 | mean predicted HF energy |
+| --- | ---: | ---: | ---: |
+| global dense MoE | **0.057676648** | **0.055451684** | **1.2347e-5** |
+| + fixed learnable local context | 0.070701717 | 0.068622036 | 1.3837e-5 |
+| + token-wise adaptive local mix | 0.072024626 | 0.069914745 | 1.4117e-5 |
+
+adaptive mixing 相对 fixed local context 的 overall 误差增加 `1.87%`，同时增加预测的
+高通能量；因此它不满足 VAE 侧保留条件。逐带 `high_rel_l2` 在部分近零高通目标上会
+非常大，不能单独作为选择指标，表中以 overall、lowpass 和预测高通能量共同判断。
+
+路由诊断显示失败机制与 operator 的强尺度塌缩不同：三个 radius 仍为
+`[0.04995, 0.15006, 0.40067]`，平均 mix 为 `[0.31621, 0.31775, 0.36604]`，且 token
+标准差仅 `[0.00276, 0.00386, 0.00620]`。也就是说，一轮稳定 fine-tuning 后 gate 基本
+没有学到有意义的 token-dependent 尺度分配，却增加了优化自由度。该开关保留为历史
+负例，不作为 VAE 或 operator 默认：`--learnable-moe-adaptive-local-mix`。
+
+下一轮改为 expert-level local mix：每个 routed expert 学习一组全局共享、连续坐标
+尺度的组合，router 只在 expert function families 间分配容量。这样保留多尺度证据，
+但不把尺度选择交给逐 token gate；它仍接受任意 `(value, coords, mask)`，没有 slot、
+FFT cutoff 或规则网格假设。
+
 ## 参考依据
 
 - Deconvolution and Checkerboard Artifacts, Distill 2016: transposed convolution 容易产生棋盘伪影，resize-convolution 是常用替代。

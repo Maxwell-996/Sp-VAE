@@ -24,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hfvae.learnable_moe import LearnableTokenMoE
+from hfvae.frequency import high_frequency_leakage_loss
 
 
 def seed_all(seed: int) -> None:
@@ -498,6 +499,49 @@ def load_historical_rollout_teacher(
     return teacher
 
 
+def load_decoded_loss_vae(
+    checkpoint_path: str | Path,
+    device: torch.device,
+) -> torch.nn.Module:
+    """Load a frozen VAE whose decoder supplies an optional latent loss."""
+    from experiments.eval_hf_vae import build_from_ckpt
+
+    vae, checkpoint = build_from_ckpt(str(checkpoint_path), device)
+    vae.eval()
+    for parameter in vae.parameters():
+        parameter.requires_grad_(False)
+    return vae
+
+
+def decoded_latent_rollout_loss(
+    vae: torch.nn.Module,
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    latent_mean: torch.Tensor,
+    latent_std: torch.Tensor,
+    high_weight: float = 0.0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compare decoded predicted/target latent frames with optional HF error."""
+    if predictions.dim() == 4:
+        predictions = predictions.unsqueeze(1)
+    if targets.dim() == 4:
+        targets = targets.unsqueeze(1)
+    latent_mean_time = latent_mean.permute(0, 2, 1, 3, 4)
+    latent_std_time = latent_std.permute(0, 2, 1, 3, 4)
+    pred_raw = predictions * latent_std_time + latent_mean_time
+    target_raw = targets * latent_std_time + latent_mean_time
+    pred_raw = pred_raw.permute(0, 2, 1, 3, 4).contiguous()
+    target_raw = target_raw.permute(0, 2, 1, 3, 4).contiguous()
+    decoded_pred = vae.decode(pred_raw, [0, 1])
+    with torch.no_grad():
+        decoded_target = vae.decode(target_raw, [0, 1])
+    decoded_mse = F.mse_loss(decoded_pred.float(), decoded_target.float())
+    decoded_hf = high_frequency_leakage_loss(
+        decoded_pred.float(), decoded_target.float()
+    )
+    return decoded_mse + high_weight * decoded_hf, decoded_mse.detach(), decoded_hf.detach()
+
+
 @torch.no_grad()
 def eval_rollout(
     model,
@@ -568,6 +612,9 @@ def main() -> None:
     ap.add_argument("--historical-rollout-weight", type=float, default=0.0)
     ap.add_argument("--historical-rollout-margin", type=float, default=0.0)
     ap.add_argument("--historical-rollout-scale", type=float, default=0.01)
+    ap.add_argument("--decoded-loss-vae-ckpt", default=None)
+    ap.add_argument("--decoded-loss-weight", type=float, default=0.0)
+    ap.add_argument("--decoded-loss-hf-weight", type=float, default=0.0)
     ap.add_argument("--no-phys", dest="use_phys", action="store_false")
     ap.set_defaults(use_phys=True)
     ap.add_argument("--hidden", type=int, default=64)
@@ -647,10 +694,21 @@ def main() -> None:
         raise ValueError("--historical-rollout-margin must be non-negative")
     if args.historical_rollout_scale <= 0:
         raise ValueError("--historical-rollout-scale must be positive")
+    if args.decoded_loss_weight < 0:
+        raise ValueError("--decoded-loss-weight must be non-negative")
+    if args.decoded_loss_hf_weight < 0:
+        raise ValueError("--decoded-loss-hf-weight must be non-negative")
+    if args.decoded_loss_weight and args.decoded_loss_vae_ckpt is None:
+        raise ValueError("--decoded-loss-vae-ckpt is required for decoded loss")
+    if args.decoded_loss_hf_weight and args.decoded_loss_weight == 0:
+        raise ValueError("decoded HF loss requires a nonzero decoded loss weight")
     if args.historical_rollout_weight and args.historical_rollout_ckpt is None:
         raise ValueError("--historical-rollout-ckpt is required when historical weight is nonzero")
     if args.historical_rollout_weight and args.train_rollout_horizon == 1:
         raise ValueError("historical rollout weighting requires --train-rollout-horizon > 1")
+    decoded_vae = None
+    if args.decoded_loss_weight:
+        decoded_vae = load_decoded_loss_vae(args.decoded_loss_vae_ckpt, device)
     train_ds = LatentTrajectoryDataset(
         args.latent_root,
         "train",
@@ -756,6 +814,8 @@ def main() -> None:
     x0, y0 = train_ds[0]
     dim_in, h, w = x0.shape
     dim_out = y0.shape[0] if args.train_rollout_horizon == 1 else y0.shape[1]
+    latent_mean = torch.tensor(norm["mean"], device=device).view(1, -1, 1, 1, 1)
+    latent_std = torch.tensor(norm["std"], device=device).view(1, -1, 1, 1, 1)
 
     rows = []
     out_csv = Path(args.out_csv).resolve()
@@ -800,6 +860,7 @@ def main() -> None:
             tsum = 0.0
             tn = 0
             twsum = 0.0
+            tdsum = 0.0
             for x, y in train_dl:
                 x = x.to(device)
                 y = y.to(device)
@@ -828,15 +889,28 @@ def main() -> None:
                             args.historical_rollout_scale,
                         )
                         twsum += float(sample_weight.detach().sum())
+                if decoded_vae is not None:
+                    decoded_loss, _decoded_mse, _decoded_hf = decoded_latent_rollout_loss(
+                        decoded_vae,
+                        pred,
+                        y,
+                        latent_mean,
+                        latent_std,
+                        args.decoded_loss_hf_weight,
+                    )
+                    loss = loss + args.decoded_loss_weight * decoded_loss
+                    tdsum += float(decoded_loss.detach()) * x.size(0)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(train_model.parameters(), 1.0)
                 opt.step()
                 tsum += float(loss.detach()) * x.size(0)
                 tn += x.size(0)
             if distributed:
-                stats = torch.tensor([tsum, tn, twsum], device=device, dtype=torch.float64)
+                stats = torch.tensor(
+                    [tsum, tn, twsum, tdsum], device=device, dtype=torch.float64
+                )
                 dist.all_reduce(stats, op=dist.ReduceOp.SUM)
-                tsum, tn, twsum = stats.tolist()
+                tsum, tn, twsum, tdsum = stats.tolist()
             if args.train_rollout_horizon == 1:
                 val = eval_one_step(
                     train_model, valid_dl, device, args.eval_batches, distributed
@@ -867,6 +941,11 @@ def main() -> None:
                     ),
                     flush=True,
                 )
+                if decoded_vae is not None:
+                    print(
+                        f"{name} ep={ep:03d} decoded_loss={tdsum / max(tn, 1):.4g}",
+                        flush=True,
+                    )
         if best_state is not None:
             model.load_state_dict(best_state)
         test_one_step = eval_one_step(
@@ -898,6 +977,9 @@ def main() -> None:
             "historical_rollout_margin": args.historical_rollout_margin,
             "historical_rollout_scale": args.historical_rollout_scale,
             "historical_rollout_ckpt": args.historical_rollout_ckpt or "",
+            "decoded_loss_vae_ckpt": args.decoded_loss_vae_ckpt or "",
+            "decoded_loss_weight": args.decoded_loss_weight,
+            "decoded_loss_hf_weight": args.decoded_loss_hf_weight,
             "seconds": time.time() - t_start,
         }
         if rank == 0:

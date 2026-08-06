@@ -56,6 +56,8 @@ def main() -> None:
     ap.add_argument("--historical-rollout-weight", type=float, default=0.0)
     ap.add_argument("--historical-rollout-margin", type=float, default=0.0)
     ap.add_argument("--historical-rollout-scale", type=float, default=0.01)
+    ap.add_argument("--decoded-loss-weight", type=float, default=0.0)
+    ap.add_argument("--decoded-loss-hf-weight", type=float, default=0.0)
     ap.add_argument("--master-port", type=int, default=29943)
     args = ap.parse_args()
 
@@ -169,6 +171,17 @@ def main() -> None:
                 str(args.historical_rollout_margin),
                 "--historical-rollout-scale",
                 str(args.historical_rollout_scale),
+            ]
+        )
+    if args.decoded_loss_weight:
+        train_cmd.extend(
+            [
+                "--decoded-loss-vae-ckpt",
+                args.vae_ckpt,
+                "--decoded-loss-weight",
+                str(args.decoded_loss_weight),
+                "--decoded-loss-hf-weight",
+                str(args.decoded_loss_hf_weight),
             ]
         )
     subprocess.run(train_cmd, cwd=ROOT, check=True)

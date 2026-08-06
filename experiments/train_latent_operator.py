@@ -1088,7 +1088,9 @@ def main() -> None:
                 device_ids=[local_rank],
                 output_device=local_rank,
                 broadcast_buffers=False,
-                find_unused_parameters=True,
+                # Every operator branch is evaluated on every forward pass;
+                # routed experts are weighted after being computed, not skipped.
+                find_unused_parameters=False,
             )
         opt = torch.optim.AdamW(train_model.parameters(), lr=args.lr, weight_decay=1e-4)
         if device.type == "cuda":

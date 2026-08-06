@@ -1186,3 +1186,8 @@ memory。VAE 与 operator 的稳态吞吐默认跳过第一个 batch 的 CUDA/ca
 decode；端到端成本使用 `evaluation_wall_seconds`。因此两类数值不能混用，也不将 VAE 解码误认为
 neural operator 的运行成本。用 `experiments/summarize_operator_runs.py` 可将任意多个 run
 directory 合并为 CSV/JSON；旧结果会保留为空，避免为没有实测的峰值显存或吞吐伪造数字。
+
+Operator DDP 使用 `find_unused_parameters=False`：HistoryMoE 会前向所有 lag expert，token MoE
+也先计算全部 expert、再用 gate 加权，没有 hard dispatch 省略参数。此前完整训练的 DDP warning
+已确认没有未使用参数；关闭该额外图遍历是纯训练效率修正，队列中的新实验会在自身结果行中报告
+`ddp_fit_seconds` 以验证实际收益。

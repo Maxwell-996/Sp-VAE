@@ -194,6 +194,41 @@ class HistoryResidualOperator(torch.nn.Module):
         return delta + latest
 
 
+class HistoryImplicitResidualOperator(torch.nn.Module):
+    """Damped fixed-point residual propagation for an implicit latent step."""
+
+    def __init__(
+        self,
+        base: torch.nn.Module,
+        channels: int,
+        history: int,
+        steps: int,
+        relaxation: float,
+    ):
+        super().__init__()
+        if channels < 1 or history < 1 or steps < 1:
+            raise ValueError("invalid implicit residual dimensions")
+        if not 0.0 < relaxation <= 1.0:
+            raise ValueError("implicit relaxation must be in (0, 1]")
+        self.base = base
+        self.channels = int(channels)
+        self.history = int(history)
+        self.steps = int(steps)
+        self.relaxation = float(relaxation)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        expected = self.history * self.channels
+        if x.shape[1] < expected:
+            raise ValueError("packed history has fewer channels than requested")
+        latest = x[:, expected - self.channels : expected]
+        candidate = latest
+        for _ in range(self.steps):
+            proposal = unwrap_model_output(self.base(torch.cat((x, candidate), dim=1)))
+            proposal = latest + proposal
+            candidate = candidate + self.relaxation * (proposal - candidate)
+        return candidate
+
+
 class HistoryMixtureOperator(torch.nn.Module):
     """Mixture of per-lag operators with an input-conditioned temporal gate.
 
@@ -433,6 +468,24 @@ def build_operator_core(name: str, dim_in: int, dim_out: int, h: int, w: int, ar
 
 
 def build_model(name: str, dim_in: int, dim_out: int, h: int, w: int, args):
+    if getattr(args, "operator_implicit_residual", False):
+        if getattr(args, "operator_history_moe", False) or getattr(
+            args, "operator_residual_prediction", False
+        ):
+            raise ValueError(
+                "implicit residual cannot be combined with history MoE or explicit residual"
+            )
+        core = build_operator_core(name, dim_in + dim_out, dim_out, h, w, args)
+        wrapped = maybe_wrap_operator(
+            core, dim_out, name, args, include_residual=False
+        )
+        return HistoryImplicitResidualOperator(
+            wrapped,
+            dim_out,
+            args.history,
+            args.operator_implicit_steps,
+            args.operator_implicit_relaxation,
+        )
     if not getattr(args, "operator_history_moe", False):
         core = build_operator_core(name, dim_in, dim_out, h, w, args)
         return maybe_wrap_operator(core, dim_out, name, args)
@@ -784,6 +837,9 @@ def main() -> None:
     ap.add_argument("--operator-moe-shared-experts", type=int, default=1)
     ap.add_argument("--operator-moe-router-noise", type=float, default=0.0)
     ap.add_argument("--operator-residual-prediction", action="store_true")
+    ap.add_argument("--operator-implicit-residual", action="store_true")
+    ap.add_argument("--operator-implicit-steps", type=int, default=2)
+    ap.add_argument("--operator-implicit-relaxation", type=float, default=0.5)
     ap.add_argument(
         "--operator-history-moe",
         action="store_true",
@@ -826,6 +882,16 @@ def main() -> None:
         raise ValueError("--train-rollout-horizon must be positive")
     if args.operator_history_moe and args.history < 2:
         raise ValueError("--operator-history-moe requires --history >= 2")
+    if args.operator_implicit_residual and args.operator_implicit_steps < 1:
+        raise ValueError("--operator-implicit-steps must be positive")
+    if not 0.0 < args.operator_implicit_relaxation <= 1.0:
+        raise ValueError("--operator-implicit-relaxation must be in (0, 1]")
+    if args.operator_implicit_residual and (
+        args.operator_history_moe or args.operator_residual_prediction
+    ):
+        raise ValueError(
+            "implicit residual cannot be combined with history MoE or explicit residual"
+        )
     if args.operator_history_moe_router_hidden < 0:
         raise ValueError("--operator-history-moe-router-hidden must be non-negative")
     if not 0.0 < args.rollout_loss_gamma <= 1.0:
@@ -1124,6 +1190,9 @@ def main() -> None:
             "decoded_loss_hf_weight": args.decoded_loss_hf_weight,
             "operator_history_moe": args.operator_history_moe,
             "operator_history_moe_router_hidden": args.operator_history_moe_router_hidden,
+            "operator_implicit_residual": args.operator_implicit_residual,
+            "operator_implicit_steps": args.operator_implicit_steps,
+            "operator_implicit_relaxation": args.operator_implicit_relaxation,
             "seconds": time.time() - t_start,
         }
         if rank == 0:

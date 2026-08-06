@@ -46,6 +46,9 @@ def main() -> None:
     )
     ap.add_argument("--operator-moe-hierarchical-global-routing", action="store_true")
     ap.add_argument("--operator-residual-prediction", action="store_true")
+    ap.add_argument("--operator-implicit-residual", action="store_true")
+    ap.add_argument("--operator-implicit-steps", type=int, default=2)
+    ap.add_argument("--operator-implicit-relaxation", type=float, default=0.5)
     ap.add_argument("--operator-history-moe", action="store_true")
     ap.add_argument("--operator-history-moe-router-hidden", type=int, default=0)
     ap.add_argument("--operator-moe-shared-experts", type=int, default=2)
@@ -165,6 +168,16 @@ def main() -> None:
         train_cmd.append("--operator-moe-hierarchical-global-routing")
     if args.operator_residual_prediction:
         train_cmd.append("--operator-residual-prediction")
+    if args.operator_implicit_residual:
+        train_cmd.extend(
+            [
+                "--operator-implicit-residual",
+                "--operator-implicit-steps",
+                str(args.operator_implicit_steps),
+                "--operator-implicit-relaxation",
+                str(args.operator_implicit_relaxation),
+            ]
+        )
     if args.operator_history_moe:
         train_cmd.extend(
             [

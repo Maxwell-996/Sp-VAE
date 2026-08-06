@@ -237,6 +237,8 @@ class LearnableTokenMoE(nn.Module):
         expert_kind: str = "mlp",
         shared_experts: int = 1,
         router_noise_std: float = 0.0,
+        dynamic_top_k_min: int | None = None,
+        dynamic_top_k_max: int | None = None,
     ):
         super().__init__()
         if channels < 1 or hidden < 1:
@@ -253,6 +255,19 @@ class LearnableTokenMoE(nn.Module):
             raise ValueError("shared_experts must be positive")
         if router_noise_std < 0:
             raise ValueError("router_noise_std must be non-negative")
+        if (dynamic_top_k_min is None) != (dynamic_top_k_max is None):
+            raise ValueError(
+                "dynamic_top_k_min and dynamic_top_k_max must be set together"
+            )
+        if dynamic_top_k_min is not None:
+            if routing != "token_choice":
+                raise ValueError("dynamic top-k currently requires token_choice routing")
+            if not 1 <= dynamic_top_k_min <= dynamic_top_k_max <= num_experts:
+                raise ValueError(
+                    "dynamic top-k bounds must satisfy 1 <= min <= max <= num_experts"
+                )
+            if not dynamic_top_k_min <= top_k <= dynamic_top_k_max:
+                raise ValueError("top_k must lie inside the dynamic top-k bounds")
         self.channels = int(channels)
         self.hidden = int(hidden)
         self.num_experts = int(num_experts)
@@ -261,6 +276,11 @@ class LearnableTokenMoE(nn.Module):
         self.expert_kind = expert_kind
         self.shared_experts = int(shared_experts)
         self.router_noise_std = float(router_noise_std)
+        self.dynamic_top_k_values = (
+            tuple(range(dynamic_top_k_min, dynamic_top_k_max + 1))
+            if dynamic_top_k_min is not None
+            else ()
+        )
         self.global_context_enabled = bool(global_context)
         self.adaptive_global = bool(adaptive_global)
         self.router_inhibition = bool(router_inhibition)
@@ -281,6 +301,22 @@ class LearnableTokenMoE(nn.Module):
             nn.LayerNorm(hidden * 2),
             nn.Linear(hidden * 2, num_experts),
         )
+        self.cardinality_router = (
+            nn.Sequential(
+                nn.LayerNorm(hidden * 2),
+                nn.Linear(hidden * 2, len(self.dynamic_top_k_values)),
+            )
+            if self.dynamic_top_k_values
+            else None
+        )
+        if self.cardinality_router is not None:
+            # Start at the requested fixed-k setting. The hard forward path is
+            # therefore exactly the pre-existing model before learning adapts
+            # cardinality to the current token and flow regime.
+            nn.init.zeros_(self.cardinality_router[-1].weight)
+            nn.init.zeros_(self.cardinality_router[-1].bias)
+            default_index = self.dynamic_top_k_values.index(self.top_k)
+            self.cardinality_router[-1].bias.data[default_index] = 3.0
         if expert_kind == "mlp":
             experts = [_Expert(hidden, expansion=expansion) for _ in range(num_experts)]
         else:
@@ -375,6 +411,22 @@ class LearnableTokenMoE(nn.Module):
             torch.full((num_experts, 3), 1.0 / 3.0),
             persistent=False,
         )
+        cardinality_count = max(len(self.dynamic_top_k_values), 1)
+        self.register_buffer(
+            "last_cardinality_probability",
+            torch.full((cardinality_count,), 1.0 / cardinality_count),
+            persistent=False,
+        )
+        self.register_buffer(
+            "last_cardinality",
+            torch.tensor(float(self.top_k)),
+            persistent=False,
+        )
+        self.register_buffer(
+            "last_cardinality_std",
+            torch.tensor(0.0),
+            persistent=False,
+        )
 
     def _aux(
         self,
@@ -443,6 +495,22 @@ class LearnableTokenMoE(nn.Module):
             "kernel_scale_stats": (
                 [expert.effective_length_scale_stats() for expert in self.experts]
                 if self.expert_kind in {"kernel", "adaptive_kernel"}
+                else []
+            ),
+            "dynamic_top_k_values": list(self.dynamic_top_k_values),
+            "dynamic_top_k_probability": (
+                self.last_cardinality_probability.detach().cpu().tolist()
+                if self.cardinality_router is not None
+                else []
+            ),
+            "dynamic_top_k_mean": (
+                [float(self.last_cardinality.detach().cpu())]
+                if self.cardinality_router is not None
+                else []
+            ),
+            "dynamic_top_k_std": (
+                [float(self.last_cardinality_std.detach().cpu())]
+                if self.cardinality_router is not None
                 else []
             ),
         }
@@ -549,6 +617,52 @@ class LearnableTokenMoE(nn.Module):
             safe_logits = torch.where(has_route, routed_logits, torch.zeros_like(routed_logits))
             route_gates = torch.softmax(safe_logits, dim=-1)
             gates = route_gates * has_route * valid
+        elif self.cardinality_router is not None:
+            candidate_gates = []
+            candidate_selection = []
+            for cardinality in self.dynamic_top_k_values:
+                top_values, top_indices = logits.topk(cardinality, dim=-1)
+                routed_logits = torch.full_like(logits, float("-inf"))
+                routed_logits.scatter_(-1, top_indices, top_values)
+                candidate_gates.append(torch.softmax(routed_logits, dim=-1) * valid)
+                selected = torch.zeros_like(logits)
+                selected.scatter_(-1, top_indices, 1.0)
+                candidate_selection.append(selected * valid)
+            candidate_gates = torch.stack(candidate_gates, dim=2)
+            candidate_selection = torch.stack(candidate_selection, dim=2)
+            cardinality_logits = self.cardinality_router(routed)
+            cardinality_probability = torch.softmax(cardinality_logits, dim=-1)
+            cardinality_index = cardinality_probability.argmax(dim=-1)
+            cardinality_hard = F.one_hot(
+                cardinality_index,
+                num_classes=len(self.dynamic_top_k_values),
+            ).to(tokens.dtype)
+            # Exact cardinality in the forward pass and a soft surrogate for
+            # the cardinality router gradient avoid train/inference mismatch.
+            cardinality_st = (
+                cardinality_hard
+                + cardinality_probability
+                - cardinality_probability.detach()
+            )
+            gates = torch.einsum("bnk,bnke->bne", cardinality_st, candidate_gates)
+            selection = torch.einsum(
+                "bnk,bnke->bne", cardinality_hard, candidate_selection
+            )
+            valid_cardinality = cardinality_hard[mask]
+            if valid_cardinality.numel():
+                cardinality_values = torch.tensor(
+                    self.dynamic_top_k_values,
+                    dtype=tokens.dtype,
+                    device=tokens.device,
+                )
+                self.last_cardinality_probability.copy_(
+                    valid_cardinality.detach().float().mean(dim=0)
+                )
+                selected_cardinality = valid_cardinality @ cardinality_values
+                self.last_cardinality.copy_(selected_cardinality.detach().float().mean())
+                self.last_cardinality_std.copy_(
+                    selected_cardinality.detach().float().std(unbiased=False)
+                )
         else:
             if self.top_k < self.num_experts:
                 top_values, top_indices = logits.topk(self.top_k, dim=-1)
@@ -595,6 +709,8 @@ class LearnableTokenMoE(nn.Module):
         importance = dense_gates.sum(dim=(0, 1)) / valid.sum().clamp_min(1.0)
         selected = selection * valid
         if self.routing == "expert_choice":
+            load = selected.sum(dim=(0, 1)) / selected.sum().clamp_min(1.0)
+        elif self.cardinality_router is not None:
             load = selected.sum(dim=(0, 1)) / selected.sum().clamp_min(1.0)
         else:
             load = selected.sum(dim=(0, 1)) / (

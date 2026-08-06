@@ -37,6 +37,8 @@ def main() -> None:
         default="mlp",
     )
     ap.add_argument("--operator-moe-top-k", type=int, default=2)
+    ap.add_argument("--operator-moe-dynamic-top-k-min", type=int, default=None)
+    ap.add_argument("--operator-moe-dynamic-top-k-max", type=int, default=None)
     ap.add_argument("--operator-moe-shared-experts", type=int, default=2)
     ap.add_argument("--operator-moe-router-inhibition", action="store_true")
     ap.add_argument("--operator-moe-local-context", action="store_true")
@@ -133,6 +135,19 @@ def main() -> None:
         train_cmd.append("--operator-moe-adaptive-local-mix")
     if args.operator_moe_expert_local_mix:
         train_cmd.append("--operator-moe-expert-local-mix")
+    if args.operator_moe_dynamic_top_k_min is not None:
+        if args.operator_moe_dynamic_top_k_max is None:
+            raise ValueError("dynamic top-k min and max must be set together")
+        train_cmd.extend(
+            [
+                "--operator-moe-dynamic-top-k-min",
+                str(args.operator_moe_dynamic_top_k_min),
+                "--operator-moe-dynamic-top-k-max",
+                str(args.operator_moe_dynamic_top_k_max),
+            ]
+        )
+    elif args.operator_moe_dynamic_top_k_max is not None:
+        raise ValueError("dynamic top-k min and max must be set together")
     if args.historical_rollout_ckpt is not None:
         train_cmd.extend(
             [

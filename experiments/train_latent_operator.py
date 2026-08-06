@@ -159,6 +159,8 @@ class OperatorMoEAdapter(torch.nn.Module):
             expert_kind=getattr(args, "operator_moe_expert_kind", "mlp"),
             shared_experts=getattr(args, "operator_moe_shared_experts", 1),
             router_noise_std=getattr(args, "operator_moe_router_noise", 0.0),
+            dynamic_top_k_min=getattr(args, "operator_moe_dynamic_top_k_min", None),
+            dynamic_top_k_max=getattr(args, "operator_moe_dynamic_top_k_max", None),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -194,6 +196,12 @@ class OperatorInternalMoE(torch.nn.Module):
                     expert_kind=getattr(args, "operator_moe_expert_kind", "mlp"),
                     shared_experts=getattr(args, "operator_moe_shared_experts", 1),
                     router_noise_std=getattr(args, "operator_moe_router_noise", 0.0),
+                    dynamic_top_k_min=getattr(
+                        args, "operator_moe_dynamic_top_k_min", None
+                    ),
+                    dynamic_top_k_max=getattr(
+                        args, "operator_moe_dynamic_top_k_max", None
+                    ),
                 )
                 for channel_count in channels
             ]
@@ -587,6 +595,8 @@ def main() -> None:
     ap.add_argument("--operator-moe-expert-local-mix", action="store_true")
     ap.add_argument("--operator-moe-shared-experts", type=int, default=1)
     ap.add_argument("--operator-moe-router-noise", type=float, default=0.0)
+    ap.add_argument("--operator-moe-dynamic-top-k-min", type=int, default=None)
+    ap.add_argument("--operator-moe-dynamic-top-k-max", type=int, default=None)
     ap.add_argument("--max-shards", type=int, default=None)
     ap.add_argument("--max-samples-per-shard", type=int, default=None)
     ap.add_argument("--eval-batches", type=int, default=0)

@@ -722,6 +722,34 @@ w=1+\lambda\frac{[e_s-e_t+m]_+}{[e_s-e_t+m]_+ + \tau},
 AR4 ground-truth loss 已足够提供稳定梯度，AR2 history 只增加了计算成本，不能作为
 默认。实现保留为 `--historical-rollout-*` 的可选研究开关，artifact 为
 `runs/ablation_ar4_historical_fno_lambda025_r1`。
+
+#### AR4 routing sparsity is backbone-dependent
+
+受 ProbMoE 的 dynamic-k 观点启发，在固定 AR4 objective、8 coordinate-kernel experts
+和相同 physical protocol 下，仅改变 token-choice `top-k`。FNO 的 sweep 包含 `k=4,6,8`；
+`k=6` 的 routing report 显示 output adapter hard load 跨 experts 为约
+`0.044-0.167`，同时保留 learned continuous radius `0.107-0.164`，因此它不是手工
+频带路由。
+
+| operator | top-k | latent test rollout | decoded physical rollout | change vs dense k=8 |
+| --- | ---: | ---: | ---: | ---: |
+| FNO | 4 | 0.125133 | 0.101020 | +0.56% |
+| FNO | 6 | **0.122424** | **0.097570** | -2.87% |
+| FNO | 8 | 0.123037 | 0.100455 | baseline |
+| Transolver | 6 | 0.210023 | 0.160028 | +3.37% |
+| Transolver | 8 | **0.198058** | **0.154813** | baseline |
+| CNextU | 6 | 0.135728 | 0.113038 | +0.68% |
+| CNextU | 8 | **0.133773** | **0.112278** | baseline |
+
+稀疏度没有跨 backbone 的单调规律：只对 FNO，`top-k=6` 改善 physical rollout；
+Transolver 和 CNextU 都需要 dense continuous mixture。故当前 per-backbone retained
+protocol 是 FNO `top-k=6, shared=1`，Transolver `top-k=8, shared=4`，CNextU
+`top-k=8, shared=1`，均使用 AR4。对应 best physical mean 是 `0.121554`，比统一
+dense AR4 的 `0.122515` 再降 `0.78%`；将 FNO 的专项收益外推给其余 backbone 会使
+平均变差。Artifacts are `runs/ablation_ar4_fno_adaptive_kernel_local_top4_r1`,
+`runs/ablation_ar4_fno_adaptive_kernel_local_top6_r1`,
+`runs/ablation_ar4_transolver_adaptive_kernel_local_top6_r1`, and
+`runs/ablation_ar4_cnextu_adaptive_kernel_local_top6_r1`.
 复现开关为 `--operator-moe-local-context`。
 
 训练和评估代码对旧 checkpoint 做了兼容处理：`operator_moe` 与
@@ -927,8 +955,9 @@ retained global dense MoE；继续修改 router、局部尺度或 VAE temporal l
 失败模式。优先级调整为：
 
 1. 对任何超过 `0.057676648` VAE reconstruction gate 的候选，固定使用 AR4 downstream
-   protocol：adaptive coordinate-kernel + fixed local context，FNO/CNextU 用 1 shared
-   expert，Transolver 用 4。VAE checkpoint 和 latent cache 不改变，保证改善来源可归因。
+   protocol：adaptive coordinate-kernel + fixed local context；FNO 用 `top-k=6, shared=1`，
+   Transolver 用 `top-k=8, shared=4`，CNextU 用 `top-k=8, shared=1`。VAE checkpoint 和
+   latent cache 不改变，保证改善来源可归因。
 2. FNO AR5 已退化，因此不把 horizon 增加视为默认方向；其它 backbone 只有在明确的
    training-coverage 或 physical-rollout 假设下才测试更长 window。
 3. 对不规则采样只比较支持坐标的 GITO/GNO/GNOT/GINO 类分支，报告 `n_obs`、边界偏置、

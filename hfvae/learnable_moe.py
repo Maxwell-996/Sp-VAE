@@ -239,6 +239,7 @@ class LearnableTokenMoE(nn.Module):
         router_noise_std: float = 0.0,
         dynamic_top_k_min: int | None = None,
         dynamic_top_k_max: int | None = None,
+        hierarchical_global_routing: bool = False,
     ):
         super().__init__()
         if channels < 1 or hidden < 1:
@@ -276,6 +277,7 @@ class LearnableTokenMoE(nn.Module):
         self.expert_kind = expert_kind
         self.shared_experts = int(shared_experts)
         self.router_noise_std = float(router_noise_std)
+        self.hierarchical_global_routing = bool(hierarchical_global_routing)
         self.dynamic_top_k_values = (
             tuple(range(dynamic_top_k_min, dynamic_top_k_max + 1))
             if dynamic_top_k_min is not None
@@ -301,6 +303,16 @@ class LearnableTokenMoE(nn.Module):
             nn.LayerNorm(hidden * 2),
             nn.Linear(hidden * 2, num_experts),
         )
+        self.global_router = (
+            nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, num_experts))
+            if self.hierarchical_global_routing
+            else None
+        )
+        if self.global_router is not None:
+            # The global route prior starts neutral, retaining the original
+            # token router until optimization finds flow-regime specialization.
+            nn.init.zeros_(self.global_router[-1].weight)
+            nn.init.zeros_(self.global_router[-1].bias)
         self.cardinality_router = (
             nn.Sequential(
                 nn.LayerNorm(hidden * 2),
@@ -427,6 +439,16 @@ class LearnableTokenMoE(nn.Module):
             torch.tensor(0.0),
             persistent=False,
         )
+        self.register_buffer(
+            "last_global_routing",
+            torch.full((num_experts,), 1.0 / num_experts),
+            persistent=False,
+        )
+        self.register_buffer(
+            "last_global_routing_std",
+            torch.zeros(num_experts),
+            persistent=False,
+        )
 
     def _aux(
         self,
@@ -513,6 +535,19 @@ class LearnableTokenMoE(nn.Module):
                 if self.cardinality_router is not None
                 else []
             ),
+            "hierarchical_global_routing": [
+                float(self.hierarchical_global_routing)
+            ],
+            "global_routing": (
+                self.last_global_routing.detach().cpu().tolist()
+                if self.global_router is not None
+                else []
+            ),
+            "global_routing_std": (
+                self.last_global_routing_std.detach().cpu().tolist()
+                if self.global_router is not None
+                else []
+            ),
         }
 
     def _local_delta(
@@ -587,7 +622,16 @@ class LearnableTokenMoE(nn.Module):
         router_local = router_features - pooled_tokens if self.router_inhibition else router_features
         routed = torch.cat((router_local, pooled_tokens), dim=-1)
         temperature = self.log_temperature.exp().clamp(0.25, 4.0)
-        logits = self.router(routed) / temperature
+        logits = self.router(routed)
+        if self.global_router is not None:
+            global_logits = self.global_router(pooled)
+            global_probability = torch.softmax(global_logits.squeeze(1), dim=-1)
+            self.last_global_routing.copy_(global_probability.detach().float().mean(dim=0))
+            self.last_global_routing_std.copy_(
+                global_probability.detach().float().std(dim=0, unbiased=False)
+            )
+            logits = logits + global_logits.expand(-1, n, -1)
+        logits = logits / temperature
         if self.training and self.router_noise_std:
             logits = logits + torch.randn_like(logits) * self.router_noise_std
         # Keep a dense probability path for the auxiliary loss. In particular,

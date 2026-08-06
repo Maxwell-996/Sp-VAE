@@ -92,6 +92,8 @@ def evaluate(args: argparse.Namespace) -> dict:
             ),
             "dynamic_top_k_mean": 0.0,
             "dynamic_top_k_std": 0.0,
+            "global_routing": torch.zeros(module.num_experts, dtype=torch.float64),
+            "global_routing_std": torch.zeros(module.num_experts, dtype=torch.float64),
         }
         for name, module in modules
     }
@@ -147,6 +149,14 @@ def evaluate(args: argparse.Namespace) -> dict:
                 )
                 totals[name]["dynamic_top_k_std"] += float(
                     stats["dynamic_top_k_std"][0]
+                )
+            global_routing = stats.get("global_routing", [])
+            if global_routing:
+                totals[name]["global_routing"] += torch.tensor(
+                    global_routing, dtype=torch.float64
+                )
+                totals[name]["global_routing_std"] += torch.tensor(
+                    stats["global_routing_std"], dtype=torch.float64
                 )
         batches += 1
         if args.max_batches and batch_index + 1 >= args.max_batches:
@@ -219,6 +229,17 @@ def evaluate(args: argparse.Namespace) -> dict:
                     values["dynamic_top_k_std"] / max(batches, 1)
                     if module.cardinality_router is not None
                     else None
+                ),
+                "hierarchical_global_routing": module.hierarchical_global_routing,
+                "global_routing": (
+                    (values["global_routing"] / max(batches, 1)).tolist()
+                    if module.global_router is not None
+                    else []
+                ),
+                "global_routing_std": (
+                    (values["global_routing_std"] / max(batches, 1)).tolist()
+                    if module.global_router is not None
+                    else []
                 ),
             }
             for name, module in modules

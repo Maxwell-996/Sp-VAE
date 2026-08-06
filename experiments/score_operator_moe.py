@@ -39,6 +39,7 @@ def main() -> None:
     ap.add_argument("--operator-moe-top-k", type=int, default=2)
     ap.add_argument("--operator-moe-dynamic-top-k-min", type=int, default=None)
     ap.add_argument("--operator-moe-dynamic-top-k-max", type=int, default=None)
+    ap.add_argument("--operator-moe-hierarchical-global-routing", action="store_true")
     ap.add_argument("--operator-moe-shared-experts", type=int, default=2)
     ap.add_argument("--operator-moe-router-inhibition", action="store_true")
     ap.add_argument("--operator-moe-local-context", action="store_true")
@@ -148,6 +149,8 @@ def main() -> None:
         )
     elif args.operator_moe_dynamic_top_k_max is not None:
         raise ValueError("dynamic top-k min and max must be set together")
+    if args.operator_moe_hierarchical_global_routing:
+        train_cmd.append("--operator-moe-hierarchical-global-routing")
     if args.historical_rollout_ckpt is not None:
         train_cmd.extend(
             [

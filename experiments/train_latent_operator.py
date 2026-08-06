@@ -161,6 +161,9 @@ class OperatorMoEAdapter(torch.nn.Module):
             router_noise_std=getattr(args, "operator_moe_router_noise", 0.0),
             dynamic_top_k_min=getattr(args, "operator_moe_dynamic_top_k_min", None),
             dynamic_top_k_max=getattr(args, "operator_moe_dynamic_top_k_max", None),
+            hierarchical_global_routing=getattr(
+                args, "operator_moe_hierarchical_global_routing", False
+            ),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -201,6 +204,9 @@ class OperatorInternalMoE(torch.nn.Module):
                     ),
                     dynamic_top_k_max=getattr(
                         args, "operator_moe_dynamic_top_k_max", None
+                    ),
+                    hierarchical_global_routing=getattr(
+                        args, "operator_moe_hierarchical_global_routing", False
                     ),
                 )
                 for channel_count in channels
@@ -597,6 +603,7 @@ def main() -> None:
     ap.add_argument("--operator-moe-router-noise", type=float, default=0.0)
     ap.add_argument("--operator-moe-dynamic-top-k-min", type=int, default=None)
     ap.add_argument("--operator-moe-dynamic-top-k-max", type=int, default=None)
+    ap.add_argument("--operator-moe-hierarchical-global-routing", action="store_true")
     ap.add_argument("--max-shards", type=int, default=None)
     ap.add_argument("--max-samples-per-shard", type=int, default=None)
     ap.add_argument("--eval-batches", type=int, default=0)

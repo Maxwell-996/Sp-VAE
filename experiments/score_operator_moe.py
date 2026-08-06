@@ -46,6 +46,8 @@ def main() -> None:
     )
     ap.add_argument("--operator-moe-hierarchical-global-routing", action="store_true")
     ap.add_argument("--operator-residual-prediction", action="store_true")
+    ap.add_argument("--operator-history-moe", action="store_true")
+    ap.add_argument("--operator-history-moe-router-hidden", type=int, default=0)
     ap.add_argument("--operator-moe-shared-experts", type=int, default=2)
     ap.add_argument("--operator-moe-router-inhibition", action="store_true")
     ap.add_argument("--operator-moe-local-context", action="store_true")
@@ -163,6 +165,14 @@ def main() -> None:
         train_cmd.append("--operator-moe-hierarchical-global-routing")
     if args.operator_residual_prediction:
         train_cmd.append("--operator-residual-prediction")
+    if args.operator_history_moe:
+        train_cmd.extend(
+            [
+                "--operator-history-moe",
+                "--operator-history-moe-router-hidden",
+                str(args.operator_history_moe_router_hidden),
+            ]
+        )
     if args.historical_rollout_ckpt is not None:
         train_cmd.extend(
             [

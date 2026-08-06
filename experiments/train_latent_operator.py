@@ -194,6 +194,75 @@ class HistoryResidualOperator(torch.nn.Module):
         return delta + latest
 
 
+class HistoryMixtureOperator(torch.nn.Module):
+    """Mixture of per-lag operators with an input-conditioned temporal gate.
+
+    Unlike concatenating all past frames into one operator input, each expert
+    receives exactly one lagged latent state plus the non-state conditioning
+    channels.  A sample-level gate then forms a convex temporal mixture.  The
+    construction does not depend on a regular spatial grid or a spectral basis.
+    """
+
+    def __init__(
+        self,
+        experts: list[torch.nn.Module],
+        channels: int,
+        history: int,
+        condition_channels: int,
+        router_hidden: int,
+    ):
+        super().__init__()
+        if len(experts) != history:
+            raise ValueError("history mixture needs one expert for every lag")
+        if channels < 1 or history < 2 or condition_channels < 0:
+            raise ValueError("invalid history-mixture dimensions")
+        self.experts = torch.nn.ModuleList(experts)
+        self.channels = int(channels)
+        self.history = int(history)
+        self.condition_channels = int(condition_channels)
+        router_in = self.history * self.channels + self.condition_channels
+        if router_hidden > 0:
+            self.router = torch.nn.Sequential(
+                torch.nn.LayerNorm(router_in),
+                torch.nn.Linear(router_in, router_hidden),
+                torch.nn.SiLU(),
+                torch.nn.Linear(router_hidden, self.history),
+            )
+        else:
+            self.router = torch.nn.Sequential(
+                torch.nn.LayerNorm(router_in),
+                torch.nn.Linear(router_in, self.history),
+            )
+        # Start from a time-local, stable mixture while allowing the gate to
+        # learn a multistep rule immediately.  The newest state is index -1.
+        final = self.router[-1]
+        torch.nn.init.zeros_(final.weight)
+        with torch.no_grad():
+            final.bias.zero_()
+            final.bias[-1] = 2.0
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        expected_state = self.history * self.channels
+        if x.shape[1] != expected_state + self.condition_channels:
+            raise ValueError(
+                "history-mixture input channels do not match its configured state and conditioning"
+            )
+        state = x[:, :expected_state].reshape(
+            x.shape[0], self.history, self.channels, x.shape[2], x.shape[3]
+        )
+        condition = x[:, expected_state:]
+        context = x.mean(dim=(-2, -1))
+        weights = torch.softmax(self.router(context), dim=-1)
+        predictions = []
+        for lag, expert in enumerate(self.experts):
+            expert_input = state[:, lag]
+            if self.condition_channels:
+                expert_input = torch.cat((expert_input, condition), dim=1)
+            predictions.append(unwrap_model_output(expert(expert_input)))
+        stacked = torch.stack(predictions, dim=1)
+        return (stacked * weights[:, :, None, None, None]).sum(dim=1)
+
+
 class OperatorInternalMoE(torch.nn.Module):
     """Inject zero-init token MoEs after an operator's hidden blocks."""
 
@@ -299,7 +368,12 @@ class OperatorInternalMoE(torch.nn.Module):
 
 
 def maybe_wrap_operator(
-    model: torch.nn.Module, dim_out: int, name: str, args
+    model: torch.nn.Module,
+    dim_out: int,
+    name: str,
+    args,
+    *,
+    include_residual: bool = True,
 ) -> torch.nn.Module:
     if getattr(args, "operator_internal_moe", False):
         model = OperatorInternalMoE(model, name, args)
@@ -307,12 +381,12 @@ def maybe_wrap_operator(
         wrapped = model
     else:
         wrapped = OperatorMoEAdapter(model, dim_out, args)
-    if getattr(args, "operator_residual_prediction", False):
+    if include_residual and getattr(args, "operator_residual_prediction", False):
         wrapped = HistoryResidualOperator(wrapped, dim_out, args.history)
     return wrapped
 
 
-def build_model(name: str, dim_in: int, dim_out: int, h: int, w: int, args):
+def build_operator_core(name: str, dim_in: int, dim_out: int, h: int, w: int, args):
     import benchmark.models as models
 
     if name == "fno":
@@ -327,7 +401,7 @@ def build_model(name: str, dim_in: int, dim_out: int, h: int, w: int, args):
             gradient_checkpointing=args.grad_ckpt,
             use_act=False,
         )
-        return maybe_wrap_operator(model, dim_out, name, args)
+        return model
     if name == "transolver":
         model = models.TransolverPlus(
             dim_in=dim_in,
@@ -341,7 +415,7 @@ def build_model(name: str, dim_in: int, dim_out: int, h: int, w: int, args):
             gradient_checkpointing=args.grad_ckpt,
             use_act=False,
         )
-        return maybe_wrap_operator(model, dim_out, name, args)
+        return model
     if name == "cnextu":
         model = models.UNetConvNext(
             dim_in=dim_in,
@@ -354,8 +428,39 @@ def build_model(name: str, dim_in: int, dim_out: int, h: int, w: int, args):
             init_features=args.hidden,
             gradient_checkpointing=args.grad_ckpt,
         )
-        return maybe_wrap_operator(model, dim_out, name, args)
+        return model
     raise ValueError(f"unknown model: {name}")
+
+
+def build_model(name: str, dim_in: int, dim_out: int, h: int, w: int, args):
+    if not getattr(args, "operator_history_moe", False):
+        core = build_operator_core(name, dim_in, dim_out, h, w, args)
+        return maybe_wrap_operator(core, dim_out, name, args)
+
+    condition_channels = dim_in - args.history * dim_out
+    if condition_channels < 0:
+        raise ValueError("history-mixture operator has fewer inputs than history states")
+    single_step_dim_in = dim_out + condition_channels
+    experts = [
+        maybe_wrap_operator(
+            build_operator_core(name, single_step_dim_in, dim_out, h, w, args),
+            dim_out,
+            name,
+            args,
+            include_residual=False,
+        )
+        for _ in range(args.history)
+    ]
+    model: torch.nn.Module = HistoryMixtureOperator(
+        experts,
+        dim_out,
+        args.history,
+        condition_channels,
+        args.operator_history_moe_router_hidden,
+    )
+    if getattr(args, "operator_residual_prediction", False):
+        model = HistoryResidualOperator(model, dim_out, args.history)
+    return model
 
 
 @torch.no_grad()
@@ -679,6 +784,12 @@ def main() -> None:
     ap.add_argument("--operator-moe-shared-experts", type=int, default=1)
     ap.add_argument("--operator-moe-router-noise", type=float, default=0.0)
     ap.add_argument("--operator-residual-prediction", action="store_true")
+    ap.add_argument(
+        "--operator-history-moe",
+        action="store_true",
+        help="Use a learnable mixture of one operator per history lag.",
+    )
+    ap.add_argument("--operator-history-moe-router-hidden", type=int, default=0)
     ap.add_argument("--operator-moe-dynamic-top-k-min", type=int, default=None)
     ap.add_argument("--operator-moe-dynamic-top-k-max", type=int, default=None)
     ap.add_argument(
@@ -713,6 +824,10 @@ def main() -> None:
     norm = torch.load(Path(args.latent_root) / "norm_stats_latent.pt", map_location="cpu", weights_only=False)
     if args.train_rollout_horizon < 1:
         raise ValueError("--train-rollout-horizon must be positive")
+    if args.operator_history_moe and args.history < 2:
+        raise ValueError("--operator-history-moe requires --history >= 2")
+    if args.operator_history_moe_router_hidden < 0:
+        raise ValueError("--operator-history-moe-router-hidden must be non-negative")
     if not 0.0 < args.rollout_loss_gamma <= 1.0:
         raise ValueError("--rollout-loss-gamma must be in (0, 1]")
     if args.historical_rollout_weight < 0:
@@ -1007,6 +1122,8 @@ def main() -> None:
             "decoded_loss_vae_ckpt": args.decoded_loss_vae_ckpt or "",
             "decoded_loss_weight": args.decoded_loss_weight,
             "decoded_loss_hf_weight": args.decoded_loss_hf_weight,
+            "operator_history_moe": args.operator_history_moe,
+            "operator_history_moe_router_hidden": args.operator_history_moe_router_hidden,
             "seconds": time.time() - t_start,
         }
         if rank == 0:

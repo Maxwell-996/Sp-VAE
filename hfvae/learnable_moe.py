@@ -229,6 +229,7 @@ class LearnableTokenMoE(nn.Module):
         expansion: int = 2,
         global_context: bool = False,
         adaptive_global: bool = False,
+        coordinate_router: bool = False,
         router_inhibition: bool = False,
         local_context: bool = False,
         adaptive_local_mix: bool = False,
@@ -289,6 +290,7 @@ class LearnableTokenMoE(nn.Module):
         self.dynamic_top_k_scope = dynamic_top_k_scope
         self.global_context_enabled = bool(global_context)
         self.adaptive_global = bool(adaptive_global)
+        self.coordinate_router_enabled = bool(coordinate_router)
         self.router_inhibition = bool(router_inhibition)
         self.local_context_enabled = bool(local_context)
         self.adaptive_local_mix = bool(local_context and adaptive_local_mix)
@@ -307,6 +309,21 @@ class LearnableTokenMoE(nn.Module):
             nn.LayerNorm(hidden * 2),
             nn.Linear(hidden * 2, num_experts),
         )
+        self.coordinate_router = (
+            nn.Sequential(
+                nn.LayerNorm(3),
+                nn.Linear(3, hidden),
+                nn.GELU(),
+                nn.Linear(hidden, num_experts),
+            )
+            if self.coordinate_router_enabled
+            else None
+        )
+        if self.coordinate_router is not None:
+            # The geometric prior starts neutral, so this is an exact
+            # continuation of the content-only router at initialization.
+            nn.init.zeros_(self.coordinate_router[-1].weight)
+            nn.init.zeros_(self.coordinate_router[-1].bias)
         self.global_router = (
             nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, num_experts))
             if self.hierarchical_global_routing
@@ -493,6 +510,7 @@ class LearnableTokenMoE(nn.Module):
             "load": self.last_load.detach().cpu().tolist(),
             "temperature": [float(self.log_temperature.exp().detach().cpu())],
             "global_gate": [float(self._last_global_gate)],
+            "coordinate_router": [float(self.coordinate_router_enabled)],
             "local_scales": (
                 self.local_log_scales.detach().exp().cpu().tolist()
                 if self.local_log_scales is not None
@@ -628,6 +646,8 @@ class LearnableTokenMoE(nn.Module):
         routed = torch.cat((router_local, pooled_tokens), dim=-1)
         temperature = self.log_temperature.exp().clamp(0.25, 4.0)
         logits = self.router(routed)
+        if self.coordinate_router is not None:
+            logits = logits + self.coordinate_router(coords)
         if self.global_router is not None:
             global_logits = self.global_router(pooled)
             global_probability = torch.softmax(global_logits.squeeze(1), dim=-1)

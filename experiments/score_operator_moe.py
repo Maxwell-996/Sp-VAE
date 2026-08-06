@@ -37,6 +37,7 @@ def main() -> None:
         default="mlp",
     )
     ap.add_argument("--operator-moe-top-k", type=int, default=2)
+    ap.add_argument("--operator-moe-coordinate-router", action="store_true")
     ap.add_argument("--operator-moe-dynamic-top-k-min", type=int, default=None)
     ap.add_argument("--operator-moe-dynamic-top-k-max", type=int, default=None)
     ap.add_argument(
@@ -142,6 +143,8 @@ def main() -> None:
         "--operator-moe-shared-experts",
         str(args.operator_moe_shared_experts),
     ]
+    if args.operator_moe_coordinate_router:
+        train_cmd.append("--operator-moe-coordinate-router")
     if args.operator_moe_router_inhibition:
         train_cmd.append("--operator-moe-router-inhibition")
     if args.operator_moe_local_context:

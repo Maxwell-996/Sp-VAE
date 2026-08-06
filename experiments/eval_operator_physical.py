@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from experiments.eval_hf_vae import build_from_ckpt
 from experiments.train_latent_operator import add_act_root, build_model, unwrap_model_output
+from hfvae.frequency import highpass_filter_2d, lowpass_filter_2d
 from hfvae.ns_data import resize_video
 
 
@@ -38,6 +39,10 @@ def per_sample_rel(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return (pred - target).square().mean(dim=dims).sqrt() / (
         target.square().mean(dim=dims).sqrt() + 1e-8
     )
+
+
+def per_sample_energy(x: torch.Tensor) -> torch.Tensor:
+    return x.square().mean(dim=tuple(range(1, x.ndim)))
 
 
 @torch.no_grad()
@@ -80,6 +85,9 @@ def evaluate(args: argparse.Namespace) -> dict[str, float | int | str]:
 
     total_data = 0.0
     total_decoded = 0.0
+    total_low_data = 0.0
+    total_high_error_energy = 0.0
+    total_high_target_energy = 0.0
     total_count = 0
     shards = list(first["shards"])
     if args.max_shards:
@@ -133,6 +141,23 @@ def evaluate(args: argparse.Namespace) -> dict[str, float | int | str]:
             total_decoded += float(
                 per_sample_rel(decoded_rollout.float(), decoded_true.float()).sum()
             )
+            low_rollout = lowpass_filter_2d(
+                decoded_rollout.float(), args.low_cutoff, args.transition
+            )
+            low_target = lowpass_filter_2d(
+                target_batch.float(), args.low_cutoff, args.transition
+            )
+            high_error = highpass_filter_2d(
+                decoded_rollout.float() - target_batch.float(),
+                args.high_cutoff,
+                args.transition,
+            )
+            high_target = highpass_filter_2d(
+                target_batch.float(), args.high_cutoff, args.transition
+            )
+            total_low_data += float(per_sample_rel(low_rollout, low_target).sum())
+            total_high_error_energy += float(per_sample_energy(high_error).sum())
+            total_high_target_energy += float(per_sample_energy(high_target).sum())
             total_count += b
         del source_data, target
 
@@ -143,6 +168,11 @@ def evaluate(args: argparse.Namespace) -> dict[str, float | int | str]:
         "samples": total_count,
         "decoded_rollout_to_data_rel": total_data / max(total_count, 1),
         "decoded_rollout_vs_vae_rel": total_decoded / max(total_count, 1),
+        "decoded_rollout_low_to_data_rel": total_low_data / max(total_count, 1),
+        "decoded_rollout_high_error_energy": total_high_error_energy / max(total_count, 1),
+        "decoded_target_high_energy": total_high_target_energy / max(total_count, 1),
+        "decoded_rollout_high_error_to_target_energy": total_high_error_energy
+        / max(total_high_target_energy, 1e-12),
     }
 
 
@@ -157,6 +187,9 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=1)
     ap.add_argument("--out-hw", type=int, default=128)
     ap.add_argument("--out-t", type=int, default=49)
+    ap.add_argument("--low-cutoff", type=float, default=0.10)
+    ap.add_argument("--high-cutoff", type=float, default=0.15)
+    ap.add_argument("--transition", type=float, default=0.04)
     ap.add_argument("--amp", action="store_true")
     ap.add_argument("--max-shards", type=int, default=None)
     ap.add_argument("--max-samples-per-shard", type=int, default=None)

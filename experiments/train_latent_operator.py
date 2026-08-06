@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import copy
 import math
 import os
 import sys
@@ -494,12 +495,23 @@ def build_model(name: str, dim_in: int, dim_out: int, h: int, w: int, args):
     if condition_channels < 0:
         raise ValueError("history-mixture operator has fewer inputs than history states")
     single_step_dim_in = dim_out + condition_channels
+    expert_args = copy.copy(args)
+    width_scale = getattr(args, "operator_history_moe_width_scale", 1.0)
+    expert_width = max(1, round(args.hidden * width_scale))
+    if name == "transolver":
+        expert_width = max(args.heads, (expert_width // args.heads) * args.heads)
+    expert_args.hidden = expert_width
+    expert_args.operator_moe_hidden = max(
+        1, round(args.operator_moe_hidden * width_scale)
+    )
     experts = [
         maybe_wrap_operator(
-            build_operator_core(name, single_step_dim_in, dim_out, h, w, args),
+            build_operator_core(
+                name, single_step_dim_in, dim_out, h, w, expert_args
+            ),
             dim_out,
             name,
-            args,
+            expert_args,
             include_residual=False,
         )
         for _ in range(args.history)
@@ -846,6 +858,7 @@ def main() -> None:
         help="Use a learnable mixture of one operator per history lag.",
     )
     ap.add_argument("--operator-history-moe-router-hidden", type=int, default=0)
+    ap.add_argument("--operator-history-moe-width-scale", type=float, default=1.0)
     ap.add_argument("--operator-moe-dynamic-top-k-min", type=int, default=None)
     ap.add_argument("--operator-moe-dynamic-top-k-max", type=int, default=None)
     ap.add_argument(
@@ -894,6 +907,8 @@ def main() -> None:
         )
     if args.operator_history_moe_router_hidden < 0:
         raise ValueError("--operator-history-moe-router-hidden must be non-negative")
+    if args.operator_history_moe_width_scale <= 0:
+        raise ValueError("--operator-history-moe-width-scale must be positive")
     if not 0.0 < args.rollout_loss_gamma <= 1.0:
         raise ValueError("--rollout-loss-gamma must be in (0, 1]")
     if args.historical_rollout_weight < 0:
@@ -1190,6 +1205,7 @@ def main() -> None:
             "decoded_loss_hf_weight": args.decoded_loss_hf_weight,
             "operator_history_moe": args.operator_history_moe,
             "operator_history_moe_router_hidden": args.operator_history_moe_router_hidden,
+            "operator_history_moe_width_scale": args.operator_history_moe_width_scale,
             "operator_implicit_residual": args.operator_implicit_residual,
             "operator_implicit_steps": args.operator_implicit_steps,
             "operator_implicit_relaxation": args.operator_implicit_relaxation,

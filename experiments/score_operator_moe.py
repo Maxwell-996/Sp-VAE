@@ -51,6 +51,7 @@ def main() -> None:
     ap.add_argument("--operator-implicit-relaxation", type=float, default=0.5)
     ap.add_argument("--operator-history-moe", action="store_true")
     ap.add_argument("--operator-history-moe-router-hidden", type=int, default=0)
+    ap.add_argument("--operator-history-moe-width-scale", type=float, default=1.0)
     ap.add_argument("--operator-moe-shared-experts", type=int, default=2)
     ap.add_argument("--operator-moe-router-inhibition", action="store_true")
     ap.add_argument("--operator-moe-local-context", action="store_true")
@@ -184,6 +185,8 @@ def main() -> None:
                 "--operator-history-moe",
                 "--operator-history-moe-router-hidden",
                 str(args.operator_history_moe_router_hidden),
+                "--operator-history-moe-width-scale",
+                str(args.operator_history_moe_width_scale),
             ]
         )
     if args.historical_rollout_ckpt is not None:

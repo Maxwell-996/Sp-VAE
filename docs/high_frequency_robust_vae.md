@@ -1070,6 +1070,30 @@ expert 选择固定容量 token。这样可以检验 token-choice 的竞争/负�
 这些结果在队列完成前不进入 retained policy；最终仍以 latent rollout、decoded physical
 rollout 和高频诊断三者共同裁决。
 
+### Queued geometry and high-frequency experiments
+
+在 Expert-Choice 之后，三种 backbone 还排入了两个参数增量很小、但不使用固定 FFT
+mode 或 slot 的对照。它们都保持当前 AR4、latent cache、seed、adaptive coordinate-kernel
+expert、local context 和 backbone-specific residual policy 不变。
+
+1. `coordinate_router`：在内容 router logits 上加一个坐标 MLP bias。坐标先按每个样本
+   的有效 token 做平移/统一尺度规范化，避免坐标单位、padding 或逐坐标 LayerNorm 改变几何
+   含义；最后一层零初始化，所以训练第一个 step 前与 content-only router 完全相同。该实验
+   对应 GNOT/GINO 中把几何作为 operator 一等输入的思想，但当前只在规则 latent grid 上
+   验证，不能外推为 irregular-mesh 结论。
+2. `high_frequency_scaling`：受
+   [HFS](https://arxiv.org/abs/2503.13695) 启发，不做频域变换，而是以连续坐标核的局部
+   均值作为 low component、`feature - local_mean` 作为 detail component，对二者施加
+   hidden-channel-wise 的可学习增益。两个增益均从零开始，因此它测量的是高频重标定本身，
+   而不是新增初始放大或更多 Fourier capacity。没有 local context 时，该模块退化为相对
+   pooled state 的 coarse/detail 分解，仍可用于任意 `(value, coords, mask)` token。
+
+两项均在 FNO (`top-k=6, shared=1, residual`)、Transolver (`top-k=8, shared=4,
+residual`) 和 CNextU (`top-k=8, shared=1, non-residual`) 上运行。每个完成 checkpoint
+都会报告 test latent rollout、decoded physical rollout、physical low/high 指标、routing
+diagnostics 和只扰动初始 history 的高通噪声 rollout。任何配置在三项证据中有一项退化，
+都不会替换当前 retained policy。
+
 ## 参考依据
 
 - Deconvolution and Checkerboard Artifacts, Distill 2016: transposed convolution 容易产生棋盘伪影，resize-convolution 是常用替代。
@@ -1106,6 +1130,8 @@ rollout 和高频诊断三者共同裁决。
 - [GITO](https://arxiv.org/abs/2506.13906): 将图局部关系、Transformer 长程依赖和任意 query location 结合，适合作为 irregular branch 的 operator 对照。
 - [FreqMoE](https://arxiv.org/abs/2505.06858): 以逐步扩展的稀疏频率专家处理 PDE 的多尺度误差，说明频率相关容量分配可以独立于固定 dense FNO。
 - [Kernel Neural Operators](https://arxiv.org/abs/2407.00809): 用可学习紧支撑 kernel 和 quadrature 支持不规则点集，是 arbitrary-format high-frequency branch 的直接候选。
+- [Mitigating Spectral Bias in Neural Operators via High-Frequency Scaling](https://arxiv.org/abs/2503.13695): 在 operator hidden feature 上显式重标定低频/高频成分；本轮将其改写为连续坐标局部核上的 coarse/detail 形式，以避免规则 patch 假设。
+- [Physics-Informed Geometry-Aware Neural Operator](https://arxiv.org/abs/2408.01600): 以 geometry encoder 支持跨域几何的 operator 学习，是将 coordinate router 扩展到真实 irregular 输入的后续参照。
 
 ### 下一轮可执行的多模型实验
 

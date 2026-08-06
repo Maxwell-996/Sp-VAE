@@ -1072,7 +1072,7 @@ rollout 和高频诊断三者共同裁决。
 
 ### Queued geometry and high-frequency experiments
 
-在 Expert-Choice 之后，三种 backbone 还排入了两个参数增量很小、但不使用固定 FFT
+在 Expert-Choice 之后，三种 backbone 还排入了三个参数增量很小、但不使用固定 FFT
 mode 或 slot 的对照。它们都保持当前 AR4、latent cache、seed、adaptive coordinate-kernel
 expert、local context 和 backbone-specific residual policy 不变。
 
@@ -1087,8 +1087,13 @@ expert、local context 和 backbone-specific residual policy 不变。
    hidden-channel-wise 的可学习增益。两个增益均从零开始，因此它测量的是高频重标定本身，
    而不是新增初始放大或更多 Fourier capacity。没有 local context 时，该模块退化为相对
    pooled state 的 coarse/detail 分解，仍可用于任意 `(value, coords, mask)` token。
+3. `anisotropic_kernel`：将 coordinate-kernel 的各向同性距离
+   \(\|c_i-c_j\|_2^2\) 改为每个 expert 独立学习的正定 Mahalanobis 距离。其 Cholesky
+   因子从 identity 开始，因此初始 kernel 与当前标量 radius 完全相同；训练后可用三个
+   singular stretches 诊断是否学到了方向相关的感受野。这直接检验 NS 的涡量/剪切结构
+   是否需要不同于纯半径变化的几何传播，而没有引入 slot、方向标签或固定 shearlet basis。
 
-两项均在 FNO (`top-k=6, shared=1, residual`)、Transolver (`top-k=8, shared=4,
+三项均在 FNO (`top-k=6, shared=1, residual`)、Transolver (`top-k=8, shared=4,
 residual`) 和 CNextU (`top-k=8, shared=1, non-residual`) 上运行。每个完成 checkpoint
 都会报告 test latent rollout、decoded physical rollout、physical low/high 指标、routing
 diagnostics 和只扰动初始 history 的高通噪声 rollout。任何配置在三项证据中有一项退化，

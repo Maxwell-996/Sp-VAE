@@ -1172,14 +1172,17 @@ CNextU rollout，以及解码后的 physical rollout；单一 static rel-L2 改�
 
 ### Efficiency reporting
 
-所有新 operator run 的 `operator/results.csv` 会额外记录参数量、DDP world size、训练和
-每 epoch 墙钟时间、全局 sample throughput，以及各 rank 的 PyTorch peak allocated/reserved
-memory。`seconds` 保留为兼容旧实验的完整 train-plus-final-evaluation 墙钟时间；新
-`ddp_fit_seconds` 明确只覆盖 epoch training 和 validation，不包含最终 independent test。
+`eval_hf_vae.py` 现在保留原逐 batch reconstruction CSV，同时用 JSON 记录 VAE 参数量、encode/
+decode 时间、重建样本/帧吞吐和峰值显存。所有新 operator run 的 `operator/results.csv` 会额外
+记录参数量、DDP world size、训练和每 epoch 墙钟时间、全局 sample throughput，以及各 rank 的
+PyTorch peak allocated/reserved memory。`seconds` 保留为兼容旧实验的完整 train-plus-final-
+evaluation 墙钟时间；新 `ddp_fit_seconds` 明确只覆盖 epoch training 和 validation，不包含最终
+independent test。
 
 物理评测 JSON 记录 operator-only autoregressive forward 的 fp32 时间、VAE decode 时间、完整
 evaluation wall time、operator trajectories/forecast frames per second，及单 GPU PyTorch peak
-memory。operator throughput 不包含数据读取、latent 归一化或 VAE decode；端到端成本使用
-`evaluation_wall_seconds`。因此两类数值不能混用，也不将 VAE 解码误认为 neural operator
-的运行成本。用 `experiments/summarize_operator_runs.py` 可将任意多个 run directory 合并为
-CSV/JSON；旧结果会保留为空，避免为没有实测的峰值显存或吞吐伪造数字。
+memory。VAE 与 operator 的稳态吞吐默认跳过第一个 batch 的 CUDA/cache warm-up，但完整
+`evaluation_wall_seconds` 始终包含它。operator throughput 不包含数据读取、latent 归一化或 VAE
+decode；端到端成本使用 `evaluation_wall_seconds`。因此两类数值不能混用，也不将 VAE 解码误认为
+neural operator 的运行成本。用 `experiments/summarize_operator_runs.py` 可将任意多个 run
+directory 合并为 CSV/JSON；旧结果会保留为空，避免为没有实测的峰值显存或吞吐伪造数字。

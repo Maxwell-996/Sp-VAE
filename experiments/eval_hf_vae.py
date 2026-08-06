@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -85,9 +87,10 @@ def rel_l2(a: torch.Tensor, b: torch.Tensor) -> float:
 
 
 @torch.no_grad()
-def evaluate(args) -> list[dict[str, float | int]]:
+def evaluate(args) -> tuple[list[dict[str, float | int]], dict[str, float | int | str | None]]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, ck = build_from_ckpt(args.ckpt, device)
+    model_parameters = sum(parameter.numel() for parameter in model.parameters())
     data_root = resolve_data_root(args.data_root)
     ds = NSShardDataset(
         data_root,
@@ -105,12 +108,33 @@ def evaluate(args) -> list[dict[str, float | int]]:
         num_workers=0,
         pin_memory=True,
     )
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+        torch.cuda.reset_peak_memory_stats(device)
+    eval_start = time.perf_counter()
     rows = []
+    total_encode_seconds = 0.0
+    total_decode_seconds = 0.0
+    timed_samples = 0
+    timed_input_frames = 0
     for bi, x in enumerate(dl):
         x = resize_video(x.to(device), args.out_hw, args.out_t)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        encode_start = time.perf_counter()
         with torch.amp.autocast("cuda", enabled=args.amp and device.type == "cuda"):
             mu, _ = model.encode_dist(x, [0, 1])
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        encode_seconds = time.perf_counter() - encode_start
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        decode_start = time.perf_counter()
+        with torch.amp.autocast("cuda", enabled=args.amp and device.type == "cuda"):
             rec = model.decode(mu, [0, 1])
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        decode_seconds = time.perf_counter() - decode_start
         low_x = lowpass_filter_2d(x, args.low_cutoff, args.transition)
         low_r = lowpass_filter_2d(rec, args.low_cutoff, args.transition)
         high_x = highpass_filter_2d(x, args.high_cutoff, args.transition)
@@ -119,17 +143,52 @@ def evaluate(args) -> list[dict[str, float | int]]:
             {
                 "batch": bi,
                 "n": x.size(0),
+                "frames_per_sample": x.size(2),
                 "rel_l2": rel_l2(rec, x),
                 "low_rel_l2": rel_l2(low_r, low_x),
                 "high_rel_l2": rel_l2(high_r, high_x),
                 "pred_hf_energy": float(high_r.square().mean()),
                 "target_hf_energy": float(high_x.square().mean()),
+                "encode_seconds": encode_seconds,
+                "decode_seconds": decode_seconds,
             }
         )
+        if bi >= args.warmup_batches:
+            total_encode_seconds += encode_seconds
+            total_decode_seconds += decode_seconds
+            timed_samples += x.size(0)
+            timed_input_frames += x.size(0) * x.size(2)
         print(rows[-1], flush=True)
         if args.max_batches and bi + 1 >= args.max_batches:
             break
-    return rows
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+        peak_allocated_mib = torch.cuda.max_memory_allocated(device) / (1024**2)
+        peak_reserved_mib = torch.cuda.max_memory_reserved(device) / (1024**2)
+    else:
+        peak_allocated_mib = None
+        peak_reserved_mib = None
+    reconstruction_seconds = total_encode_seconds + total_decode_seconds
+    summary = {
+        "checkpoint": str(Path(args.ckpt).resolve()),
+        "evaluation_device": str(device),
+        "model_parameters": model_parameters,
+        "vae_amp": bool(args.amp and device.type == "cuda"),
+        "samples": sum(int(row["n"]) for row in rows),
+        "timed_samples": timed_samples,
+        "timed_input_frames": timed_input_frames,
+        "warmup_batches": args.warmup_batches,
+        "evaluation_wall_seconds": time.perf_counter() - eval_start,
+        "encode_seconds": total_encode_seconds,
+        "decode_seconds": total_decode_seconds,
+        "reconstruction_seconds": reconstruction_seconds,
+        "reconstruction_samples_per_second": timed_samples / max(reconstruction_seconds, 1e-12),
+        "reconstruction_frames_per_second": timed_input_frames
+        / max(reconstruction_seconds, 1e-12),
+        "evaluation_peak_allocated_mib": peak_allocated_mib,
+        "evaluation_peak_reserved_mib": peak_reserved_mib,
+    }
+    return rows, summary
 
 
 def main() -> None:
@@ -148,9 +207,11 @@ def main() -> None:
     ap.add_argument("--max-shards", type=int, default=None)
     ap.add_argument("--max-samples-per-shard", type=int, default=None)
     ap.add_argument("--max-batches", type=int, default=0)
+    ap.add_argument("--warmup-batches", type=int, default=1)
     ap.add_argument("--out-csv", default=None)
+    ap.add_argument("--out-json", default=None)
     args = ap.parse_args()
-    rows = evaluate(args)
+    rows, summary = evaluate(args)
     if args.out_csv:
         out = Path(args.out_csv)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -158,6 +219,11 @@ def main() -> None:
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             writer.writeheader()
             writer.writerows(rows)
+    print(json.dumps(summary, sort_keys=True))
+    if args.out_json:
+        out = Path(args.out_json)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -99,6 +99,8 @@ def evaluate(args: argparse.Namespace) -> dict[str, float | int | str]:
     operator_rollout_seconds = 0.0
     vae_decode_seconds = 0.0
     operator_forecast_frames = 0
+    operator_timed_trajectories = 0
+    batch_index = 0
     shards = list(first["shards"])
     if args.max_shards:
         shards = shards[: args.max_shards]
@@ -145,8 +147,10 @@ def evaluate(args: argparse.Namespace) -> dict[str, float | int | str]:
                 history_values.append(prediction)
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
-            operator_rollout_seconds += time.perf_counter() - rollout_start
-            operator_forecast_frames += b * (frames - history)
+            if batch_index >= args.warmup_batches:
+                operator_rollout_seconds += time.perf_counter() - rollout_start
+                operator_forecast_frames += b * (frames - history)
+                operator_timed_trajectories += b
             rollout_norm = torch.cat(
                 [z_norm[:, :, :history], torch.stack(predictions, dim=2)], dim=2
             )
@@ -159,7 +163,8 @@ def evaluate(args: argparse.Namespace) -> dict[str, float | int | str]:
                 decoded_true = vae.decode(z_batch, [0, 1])
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
-            vae_decode_seconds += time.perf_counter() - decode_start
+            if batch_index >= args.warmup_batches:
+                vae_decode_seconds += time.perf_counter() - decode_start
             total_data += float(per_sample_rel(decoded_rollout.float(), target_batch).sum())
             total_decoded += float(
                 per_sample_rel(decoded_rollout.float(), decoded_true.float()).sum()
@@ -182,6 +187,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, float | int | str]:
             total_high_error_energy += float(per_sample_energy(high_error).sum())
             total_high_target_energy += float(per_sample_energy(high_target).sum())
             total_count += b
+            batch_index += 1
         del source_data, target
 
     eval_wall_seconds = time.perf_counter() - eval_start
@@ -205,7 +211,9 @@ def evaluate(args: argparse.Namespace) -> dict[str, float | int | str]:
         "evaluation_wall_seconds": eval_wall_seconds,
         "operator_rollout_seconds": operator_rollout_seconds,
         "vae_decode_seconds": vae_decode_seconds,
-        "operator_trajectories_per_second": total_count
+        "operator_timed_trajectories": operator_timed_trajectories,
+        "warmup_batches": args.warmup_batches,
+        "operator_trajectories_per_second": operator_timed_trajectories
         / max(operator_rollout_seconds, 1e-12),
         "operator_forecast_frames": operator_forecast_frames,
         "operator_forecast_frames_per_second": operator_forecast_frames
@@ -239,6 +247,7 @@ def main() -> None:
     ap.add_argument("--amp", action="store_true")
     ap.add_argument("--max-shards", type=int, default=None)
     ap.add_argument("--max-samples-per-shard", type=int, default=None)
+    ap.add_argument("--warmup-batches", type=int, default=1)
     ap.add_argument("--out-json", default=None)
     args = ap.parse_args()
     result = evaluate(args)

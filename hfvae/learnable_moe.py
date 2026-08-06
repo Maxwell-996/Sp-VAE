@@ -230,6 +230,7 @@ class LearnableTokenMoE(nn.Module):
         global_context: bool = False,
         adaptive_global: bool = False,
         coordinate_router: bool = False,
+        high_frequency_scaling: bool = False,
         router_inhibition: bool = False,
         local_context: bool = False,
         adaptive_local_mix: bool = False,
@@ -291,6 +292,7 @@ class LearnableTokenMoE(nn.Module):
         self.global_context_enabled = bool(global_context)
         self.adaptive_global = bool(adaptive_global)
         self.coordinate_router_enabled = bool(coordinate_router)
+        self.high_frequency_scaling_enabled = bool(high_frequency_scaling)
         self.router_inhibition = bool(router_inhibition)
         self.local_context_enabled = bool(local_context)
         self.adaptive_local_mix = bool(local_context and adaptive_local_mix)
@@ -323,6 +325,16 @@ class LearnableTokenMoE(nn.Module):
             # continuation of the content-only router at initialization.
             nn.init.zeros_(self.coordinate_router[-1].weight)
             nn.init.zeros_(self.coordinate_router[-1].bias)
+        self.hf_low_gain = (
+            nn.Parameter(torch.zeros(hidden))
+            if self.high_frequency_scaling_enabled
+            else None
+        )
+        self.hf_high_gain = (
+            nn.Parameter(torch.zeros(hidden))
+            if self.high_frequency_scaling_enabled
+            else None
+        )
         self.global_router = (
             nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, num_experts))
             if self.hierarchical_global_routing
@@ -525,6 +537,9 @@ class LearnableTokenMoE(nn.Module):
             "temperature": [float(self.log_temperature.exp().detach().cpu())],
             "global_gate": [float(self._last_global_gate)],
             "coordinate_router": [float(self.coordinate_router_enabled)],
+            "high_frequency_scaling": [
+                float(self.high_frequency_scaling_enabled)
+            ],
             "local_scales": (
                 self.local_log_scales.detach().exp().cpu().tolist()
                 if self.local_log_scales is not None
@@ -646,6 +661,17 @@ class LearnableTokenMoE(nn.Module):
             if self.local_context_enabled
             else (None, None)
         )
+        if self.high_frequency_scaling_enabled:
+            low_frequency = (
+                features + local_delta
+                if local_delta is not None
+                else pooled_tokens
+            )
+            high_frequency = features - low_frequency
+            features = features + (
+                self.hf_low_gain[None, None, :] * low_frequency
+                + self.hf_high_gain[None, None, :] * high_frequency
+            )
         expert_features = (
             features + self.local_expert(local_delta)
             if local_delta is not None and self.local_expert is not None

@@ -1066,6 +1066,7 @@ def main() -> None:
     for name in args.models:
         seed_all(args.seed)
         model = build_model(name, dim_in, dim_out, h, w, args).to(device)
+        parameter_count = sum(parameter.numel() for parameter in model.parameters())
         teacher = (
             load_historical_rollout_teacher(
                 args.historical_rollout_ckpt,
@@ -1090,9 +1091,12 @@ def main() -> None:
                 find_unused_parameters=True,
             )
         opt = torch.optim.AdamW(train_model.parameters(), lr=args.lr, weight_decay=1e-4)
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
         best = float("inf")
         best_state = None
-        t_start = time.time()
+        t_start = time.perf_counter()
+        train_examples_seen = 0
         for ep in range(args.epochs):
             if distributed:
                 train_sampler.set_epoch(ep)
@@ -1151,6 +1155,7 @@ def main() -> None:
                 )
                 dist.all_reduce(stats, op=dist.ReduceOp.SUM)
                 tsum, tn, twsum, tdsum = stats.tolist()
+            train_examples_seen += int(tn)
             if args.train_rollout_horizon == 1:
                 val = eval_one_step(
                     train_model, valid_dl, device, args.eval_batches, distributed
@@ -1186,6 +1191,22 @@ def main() -> None:
                         f"{name} ep={ep:03d} decoded_loss={tdsum / max(tn, 1):.4g}",
                         flush=True,
                     )
+        fit_seconds = time.perf_counter() - t_start
+        if device.type == "cuda":
+            peak_memory = torch.tensor(
+                [
+                    torch.cuda.max_memory_allocated(device) / (1024**2),
+                    torch.cuda.max_memory_reserved(device) / (1024**2),
+                ],
+                device=device,
+                dtype=torch.float64,
+            )
+            if distributed:
+                dist.all_reduce(peak_memory, op=dist.ReduceOp.MAX)
+            peak_allocated_mib, peak_reserved_mib = peak_memory.tolist()
+        else:
+            peak_allocated_mib = None
+            peak_reserved_mib = None
         if best_state is not None:
             model.load_state_dict(best_state)
         test_one_step = eval_one_step(
@@ -1226,7 +1247,15 @@ def main() -> None:
             "operator_implicit_residual": args.operator_implicit_residual,
             "operator_implicit_steps": args.operator_implicit_steps,
             "operator_implicit_relaxation": args.operator_implicit_relaxation,
-            "seconds": time.time() - t_start,
+            "parameters": parameter_count,
+            "ddp_world_size": world_size,
+            "ddp_fit_seconds": fit_seconds,
+            "ddp_fit_seconds_per_epoch": fit_seconds / max(args.epochs, 1),
+            "ddp_train_examples_seen": train_examples_seen,
+            "ddp_train_examples_per_second": train_examples_seen / max(fit_seconds, 1e-12),
+            "ddp_peak_allocated_mib_per_rank": peak_allocated_mib,
+            "ddp_peak_reserved_mib_per_rank": peak_reserved_mib,
+            "seconds": time.perf_counter() - t_start,
         }
         if rank == 0:
             rows.append(row)

@@ -1017,6 +1017,12 @@ rollout `0.096904723`，相对 fixed-state FNO `0.122424207/0.097570488` 分别�
 (`top-k=8, shared=4`) 与 CNextU (`top-k=8, shared=1`) 复验，只有两者也保持 physical
 改善才将 residual parameterization 设为三 backbone 默认。
 
+Transolver 的独立 full-scale run 同样通过：latent/physical 为
+`0.188513436/0.142855482`，相对 retained Transolver
+`0.198057677/0.154812912` 改善 `4.82%/7.72%`，training time `1675s`。CNextU 的相同
+AR4 residual protocol 仍在 `runs/ablation_ar4_cnextu_residual_r1` 运行；在它完成前，
+residual 只作为 FNO/Transolver 的 confirmed improvement，不提前声称为全 backbone 规律。
+
 ## 参考依据
 
 - Deconvolution and Checkerboard Artifacts, Distill 2016: transposed convolution 容易产生棋盘伪影，resize-convolution 是常用替代。

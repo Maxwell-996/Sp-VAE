@@ -916,6 +916,43 @@ revert 中移除，full artifacts 保留在 `runs/vae_hf_latent_prediction_h20_r
 质量应在下游 coordinate-kernel operator 中通过多步 rollout objective 测试，而不是把一个
 弱 temporal predictor 反向塞进 encoder。
 
+### In-progress: differentiable dynamic cardinality and hierarchical routing
+
+固定稀疏度在 AR4 中没有跨 backbone 一致性：FNO 偏好 `k=6`，而 Transolver 与 CNextU
+偏好 dense `k=8`。这使“再找一个全局最优整数 k”缺乏理论基础。受
+[ProbMoE](https://arxiv.org/abs/2606.01509) 的 cardinality-constrained routing 启发，当前
+测试不把 token 分组、排序或投影到频率带，而令每个保留原位置的 token 从离散集合
+`K={4,5,6,7,8}` 中选择一个 expert cardinality：
+
+\[
+q_i=\operatorname{softmax}(C([h_i,\bar h])),\qquad
+k_i=K_{\arg\max q_i},\qquad
+g_i=\operatorname{softmax}(\ell_i|_{\operatorname{TopK}(\ell_i,k_i)}).
+\]
+
+前向路径因此严格只保留 `k_i` 个 routed experts；反向使用
+`onehot(argmax(q_i))+q_i-stopgrad(q_i)` 的 straight-through surrogate。cardinality head
+零初始化且对 FNO 的 `k=6` 注入唯一正 bias，故初始化前向与 retained FNO `top-k=6`
+完全相同。当前实现仍计算所有 expert value 以保持 kernel-MoE 的张量化实现，因此本轮是
+**精度/稳定性** 对照，并不把它报告为实际 wall-clock sparse dispatch 加速。
+
+并行的第二个假设来自 [NESTOR](https://arxiv.org/abs/2602.22059)：令 token router 的
+logit 显式分解为样本级 global expert prior 与 token-level residual：
+
+\[
+\ell_{ie}=R_e([h_i,\bar h])+G_e(\bar h).
+\]
+
+这里 `G` 的最后一层零初始化，故该 hierarchical global routing 也从完全相同的 fixed-k
+baseline 开始。它不是 slot attention：没有改变 token 数、token 顺序或坐标；全局项只是
+根据整条流场/物理 regime 重新加权同一组 coordinate-kernel experts。routing report 会同时
+记录每层 `k` 的经验分布、mean/std，以及 global prior 的样本间方差，防止“指标改善但新
+路由没有真正被使用”的误判。
+
+两个 full-scale FNO AR4 jobs 的接受条件均是同时优于 retained FNO `k=6` 的 latent
+rollout `0.122424207` 和 decoded physical rollout `0.097570488`。仅通过 FNO gate 的
+设计才会扩展至 Transolver 与 CNextU；固定-k=5 的独立消融同时用于闭合整数 sweep。
+
 ## 参考依据
 
 - Deconvolution and Checkerboard Artifacts, Distill 2016: transposed convolution 容易产生棋盘伪影，resize-convolution 是常用替代。
@@ -936,6 +973,8 @@ revert 中移除，full artifacts 保留在 `runs/vae_hf_latent_prediction_h20_r
 - [Expert Choice Routing](https://arxiv.org/abs/2202.09368): 由 expert 选择固定容量 token，避免 token-choice 的容量竞争。
 - [DeepSeekMoE](https://arxiv.org/abs/2401.06066): fine-grained routed experts 加 shared experts，提升组合式专家专门化。
 - [NESTOR](https://arxiv.org/abs/2602.22059): 以 shared/global/local 层级构造 nested MoE neural operator。
+- [ProbMoE](https://arxiv.org/abs/2606.01509): 将 routing 建模为固定基数 subset 的概率推断，
+  支持 Exact-k 与 Dynamic-k，是当前 per-token cardinality 对照的直接动机。
 - [HERO](https://arxiv.org/abs/2607.29135): 用历史模型的失败 rollout 构造 margin-based relative supervision，直接启发历史参考的 operator loss 对照。
 - [Mixture of Neural Operator Experts](https://arxiv.org/abs/2502.04562): 用空间条件 MoE
   处理边界条件与模型选择，是 coordinate-kernel expert 的直接结构动机。

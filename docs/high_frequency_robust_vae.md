@@ -726,7 +726,7 @@ AR4 ground-truth loss 已足够提供稳定梯度，AR2 history 只增加了计�
 #### AR4 routing sparsity is backbone-dependent
 
 受 ProbMoE 的 dynamic-k 观点启发，在固定 AR4 objective、8 coordinate-kernel experts
-和相同 physical protocol 下，仅改变 token-choice `top-k`。FNO 的 sweep 包含 `k=4,6,8`；
+和相同 physical protocol 下，仅改变 token-choice `top-k`。FNO 的完整 sweep 包含 `k=4..8`；
 `k=6` 的 routing report 显示 output adapter hard load 跨 experts 为约
 `0.044-0.167`，同时保留 learned continuous radius `0.107-0.164`，因此它不是手工
 频带路由。
@@ -734,14 +734,18 @@ AR4 ground-truth loss 已足够提供稳定梯度，AR2 history 只增加了计�
 | operator | top-k | latent test rollout | decoded physical rollout | change vs dense k=8 |
 | --- | ---: | ---: | ---: | ---: |
 | FNO | 4 | 0.125133 | 0.101020 | +0.56% |
+| FNO | 5 | 0.129793 | 0.104998 | +4.52% |
 | FNO | 6 | **0.122424** | **0.097570** | -2.87% |
+| FNO | 7 | 0.127165 | 0.103668 | +3.20% |
 | FNO | 8 | 0.123037 | 0.100455 | baseline |
 | Transolver | 6 | 0.210023 | 0.160028 | +3.37% |
 | Transolver | 8 | **0.198058** | **0.154813** | baseline |
 | CNextU | 6 | 0.135728 | 0.113038 | +0.68% |
 | CNextU | 8 | **0.133773** | **0.112278** | baseline |
 
-稀疏度没有跨 backbone 的单调规律：只对 FNO，`top-k=6` 改善 physical rollout；
+FNO 的完整整数 sweep 也不是单调曲线：`k=5` 相对 retained `k=6` 的 latent/physical
+分别退化 `6.02%/7.61%`，`k=7` 也退化。因此固定稀疏度没有跨 backbone 的单调规律：只对
+FNO，`top-k=6` 改善 physical rollout；
 Transolver 和 CNextU 都需要 dense continuous mixture。故当前 per-backbone retained
 protocol 是 FNO `top-k=6, shared=1`，Transolver `top-k=8, shared=4`，CNextU
 `top-k=8, shared=1`，均使用 AR4。对应 best physical mean 是 `0.121554`，比统一
@@ -749,7 +753,9 @@ dense AR4 的 `0.122515` 再降 `0.78%`；将 FNO 的专项收益外推给其余
 平均变差。Artifacts are `runs/ablation_ar4_fno_adaptive_kernel_local_top4_r1`,
 `runs/ablation_ar4_fno_adaptive_kernel_local_top6_r1`,
 `runs/ablation_ar4_transolver_adaptive_kernel_local_top6_r1`, and
-`runs/ablation_ar4_cnextu_adaptive_kernel_local_top6_r1`.
+`runs/ablation_ar4_cnextu_adaptive_kernel_local_top6_r1`；FNO `k=5,7` 的 artifacts 分别为
+`runs/ablation_ar4_fno_adaptive_kernel_local_top5_r1` 与
+`runs/ablation_ar4_fno_adaptive_kernel_local_top7_r1`.
 复现开关为 `--operator-moe-local-context`。
 
 训练和评估代码对旧 checkpoint 做了兼容处理：`operator_moe` 与

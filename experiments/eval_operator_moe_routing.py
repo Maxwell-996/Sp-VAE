@@ -87,6 +87,11 @@ def evaluate(args: argparse.Namespace) -> dict:
             "kernel_scale_std": torch.zeros(module.num_experts, dtype=torch.float64),
             "kernel_scale_min": torch.zeros(module.num_experts, dtype=torch.float64),
             "kernel_scale_max": torch.zeros(module.num_experts, dtype=torch.float64),
+            "dynamic_top_k_probability": torch.zeros(
+                len(module.dynamic_top_k_values), dtype=torch.float64
+            ),
+            "dynamic_top_k_mean": 0.0,
+            "dynamic_top_k_std": 0.0,
         }
         for name, module in modules
     }
@@ -132,6 +137,17 @@ def evaluate(args: argparse.Namespace) -> dict:
                 totals[name]["kernel_scale_std"] += scale_stats[:, 1]
                 totals[name]["kernel_scale_min"] += scale_stats[:, 2]
                 totals[name]["kernel_scale_max"] += scale_stats[:, 3]
+            dynamic_probability = stats.get("dynamic_top_k_probability", [])
+            if dynamic_probability:
+                totals[name]["dynamic_top_k_probability"] += torch.tensor(
+                    dynamic_probability, dtype=torch.float64
+                )
+                totals[name]["dynamic_top_k_mean"] += float(
+                    stats["dynamic_top_k_mean"][0]
+                )
+                totals[name]["dynamic_top_k_std"] += float(
+                    stats["dynamic_top_k_std"][0]
+                )
         batches += 1
         if args.max_batches and batch_index + 1 >= args.max_batches:
             break
@@ -187,6 +203,22 @@ def evaluate(args: argparse.Namespace) -> dict:
                     (values["kernel_scale_max"] / max(batches, 1)).tolist()
                     if module.expert_kind in {"kernel", "adaptive_kernel"}
                     else []
+                ),
+                "dynamic_top_k_values": list(module.dynamic_top_k_values),
+                "dynamic_top_k_probability": (
+                    (values["dynamic_top_k_probability"] / max(batches, 1)).tolist()
+                    if module.cardinality_router is not None
+                    else []
+                ),
+                "dynamic_top_k_mean": (
+                    values["dynamic_top_k_mean"] / max(batches, 1)
+                    if module.cardinality_router is not None
+                    else None
+                ),
+                "dynamic_top_k_std": (
+                    values["dynamic_top_k_std"] / max(batches, 1)
+                    if module.cardinality_router is not None
+                    else None
                 ),
             }
             for name, module in modules

@@ -1099,6 +1099,19 @@ residual`) 和 CNextU (`top-k=8, shared=1, non-residual`) 上运行。每个完�
 diagnostics 和只扰动初始 history 的高通噪声 rollout。任何配置在三项证据中有一项退化，
 都不会替换当前 retained policy。
 
+当前 configuration 的参数审计如下；这是训练前由实际 model builder 计算的总参数量。
+full history-MoE 明确只作为容量上界，`width-scale=0.5` 才是与 retained setting 接近的
+公平对照。其余三项仅是轻量结构变化，不能用参数增加解释成效：
+
+| configuration | FNO | Transolver | CNextU |
+| --- | ---: | ---: | ---: |
+| retained | 1,626,642 | 1,429,708 | 9,510,416 |
+| full history-MoE | 6,484,434 | 5,696,698 | 37,933,514 |
+| parameter-matched history-MoE | 1,717,458 | 1,490,234 | 9,720,010 |
+| `coordinate_router` | 1,630,522 (+0.24%) | 1,432,812 (+0.22%) | 9,516,624 (+0.07%) |
+| `high_frequency_scaling` | 1,627,282 (+0.04%) | 1,430,220 (+0.04%) | 9,511,440 (+0.01%) |
+| `anisotropic_kernel` | 1,627,002 (+0.02%) | 1,429,996 (+0.02%) | 9,510,992 (+0.01%) |
+
 ## 参考依据
 
 - Deconvolution and Checkerboard Artifacts, Distill 2016: transposed convolution 容易产生棋盘伪影，resize-convolution 是常用替代。

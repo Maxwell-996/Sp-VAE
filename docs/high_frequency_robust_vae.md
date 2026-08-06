@@ -996,6 +996,27 @@ decoded reconstruction 的梯度与 closed-loop latent stability 冲突，且 2.
 `runs/ablation_ar4_fno_decoded_loss005_r1` 与
 `runs/ablation_ar4_fno_decoded_loss05_r1`，但不进入默认或三 backbone 扩展。
 
+### Residual latent propagation
+
+受 [SGNO](https://arxiv.org/abs/2602.18801) 的 residual time-stepper、稳定 latent
+propagator 和 residual dynamics 文献启发，测试了不改变 backbone 或 MoE 的 residual
+parameterization：
+
+\[
+z_{t+1}=z_t+\Delta z_\theta(z_{t-3:t},r).
+\]
+
+`HistoryResidualOperator` 只把最近一个 latent history frame 加回 operator 输出；物理
+regime 通道不会被当成 skip state。它不使用 FFT mode、slot 或额外频率标签，且在同一个
+AR4 objective、seed、VAE latent 和 FNO `top-k=6` 下比较。
+
+FNO full-scale test 通过了 retained gate：latent rollout `0.118178525`、decoded physical
+rollout `0.096904723`，相对 fixed-state FNO `0.122424207/0.097570488` 分别改善
+`3.47%/0.68%`；training time `2037s`，与原 protocol 相当。该结果是当前 operator 主线
+第一个同时改善 latent 与 physical 长程指标的结构变化。下一步用 Transolver
+(`top-k=8, shared=4`) 与 CNextU (`top-k=8, shared=1`) 复验，只有两者也保持 physical
+改善才将 residual parameterization 设为三 backbone 默认。
+
 ## 参考依据
 
 - Deconvolution and Checkerboard Artifacts, Distill 2016: transposed convolution 容易产生棋盘伪影，resize-convolution 是常用替代。
@@ -1016,6 +1037,10 @@ decoded reconstruction 的梯度与 closed-loop latent stability 冲突，且 2.
 - [Expert Choice Routing](https://arxiv.org/abs/2202.09368): 由 expert 选择固定容量 token，避免 token-choice 的容量竞争。
 - [DeepSeekMoE](https://arxiv.org/abs/2401.06066): fine-grained routed experts 加 shared experts，提升组合式专家专门化。
 - [NESTOR](https://arxiv.org/abs/2602.22059): 以 shared/global/local 层级构造 nested MoE neural operator。
+- [SGNO](https://arxiv.org/abs/2602.18801): 用受约束 spectral generator 构造 residual time-stepper，
+  为 latent residual propagation 的长程稳定性假设提供直接动机。
+- [Stable Long-Horizon PDE Forecasting](https://arxiv.org/abs/2605.10154): 将表示重建与
+  propagation state 分离，支持“压缩表示适合传播”而非仅适合静态重建的观点。
 - [ProbMoE](https://arxiv.org/abs/2606.01509): 将 routing 建模为固定基数 subset 的概率推断，
   支持 Exact-k 与 Dynamic-k，是当前 per-token cardinality 对照的直接动机。
 - [HERO](https://arxiv.org/abs/2607.29135): 用历史模型的失败 rollout 构造 margin-based relative supervision，直接启发历史参考的 operator loss 对照。

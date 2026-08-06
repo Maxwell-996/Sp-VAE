@@ -1019,9 +1019,16 @@ rollout `0.096904723`，相对 fixed-state FNO `0.122424207/0.097570488` 分别�
 
 Transolver 的独立 full-scale run 同样通过：latent/physical 为
 `0.188513436/0.142855482`，相对 retained Transolver
-`0.198057677/0.154812912` 改善 `4.82%/7.72%`，training time `1675s`。CNextU 的相同
-AR4 residual protocol 仍在 `runs/ablation_ar4_cnextu_residual_r1` 运行；在它完成前，
-residual 只作为 FNO/Transolver 的 confirmed improvement，不提前声称为全 backbone 规律。
+`0.198057677/0.154812912` 改善 `4.82%/7.72%`，training time `1675s`。
+
+CNextU 的独立 full-scale AR4 run 完成后得到 `0.143218225/0.117794203`，相对它的
+non-residual retained setting `0.133773496/0.112278109` 退化 `7.06%/4.91%`。因此
+residual parameterization 不是跨 backbone 的默认规律：FNO 保留 residual + `top-k=6,
+shared=1`，Transolver 保留 residual + `top-k=8, shared=4`，CNextU 保留 non-residual +
+`top-k=8, shared=1`。这个选择的三模型 test-rollout latent / decoded physical mean 为
+`0.146821819/0.117346105`；相对残差实验前的 retained mean
+`0.151418460/0.121553836` 再改善 `3.04%/3.46%`。若把 residual 强制用于三者，mean 反而
+变为 `0.149970062/0.119184803`，所以没有用统一结构掩盖 CNextU 的反例。
 
 ## 参考依据
 

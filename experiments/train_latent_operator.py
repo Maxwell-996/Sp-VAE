@@ -172,6 +172,28 @@ class OperatorMoEAdapter(torch.nn.Module):
         return self.moe(unwrap_model_output(self.base(x)))
 
 
+class HistoryResidualOperator(torch.nn.Module):
+    """Predict a latent increment on top of the most recent history state."""
+
+    def __init__(self, base: torch.nn.Module, channels: int, history: int):
+        super().__init__()
+        if channels < 1 or history < 1:
+            raise ValueError("channels and history must be positive")
+        self.base = base
+        self.channels = int(channels)
+        self.history = int(history)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        expected = self.history * self.channels
+        if x.shape[1] < expected:
+            raise ValueError(
+                f"expected at least {expected} history channels, got {x.shape[1]}"
+            )
+        delta = unwrap_model_output(self.base(x))
+        latest = x[:, expected - self.channels : expected]
+        return delta + latest
+
+
 class OperatorInternalMoE(torch.nn.Module):
     """Inject zero-init token MoEs after an operator's hidden blocks."""
 
@@ -282,8 +304,12 @@ def maybe_wrap_operator(
     if getattr(args, "operator_internal_moe", False):
         model = OperatorInternalMoE(model, name, args)
     if not getattr(args, "operator_moe", False):
-        return model
-    return OperatorMoEAdapter(model, dim_out, args)
+        wrapped = model
+    else:
+        wrapped = OperatorMoEAdapter(model, dim_out, args)
+    if getattr(args, "operator_residual_prediction", False):
+        wrapped = HistoryResidualOperator(wrapped, dim_out, args.history)
+    return wrapped
 
 
 def build_model(name: str, dim_in: int, dim_out: int, h: int, w: int, args):
@@ -652,6 +678,7 @@ def main() -> None:
     ap.add_argument("--operator-moe-expert-local-mix", action="store_true")
     ap.add_argument("--operator-moe-shared-experts", type=int, default=1)
     ap.add_argument("--operator-moe-router-noise", type=float, default=0.0)
+    ap.add_argument("--operator-residual-prediction", action="store_true")
     ap.add_argument("--operator-moe-dynamic-top-k-min", type=int, default=None)
     ap.add_argument("--operator-moe-dynamic-top-k-max", type=int, default=None)
     ap.add_argument(

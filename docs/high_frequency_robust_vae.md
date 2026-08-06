@@ -1044,6 +1044,15 @@ expert 处理，sample-level gate 对四个输出做凸组合。该方法不依�
 residual 和 parameter-matched history-MoE 均使用同一 latent cache、AR4 loss、seed 和
 240 条 test trajectories，最终以 decoded physical rollout 及高频诊断共同裁决。
 
+Transolver full-capacity history-MoE 已完成这一步裁决中的容量上界部分：test latent rollout
+`0.179948`、decoded physical rollout `0.137261`，相对 retained residual Transolver 的
+`0.188513/0.142855` 改善 `4.54%/3.91%`。但参数由 `1,429,708` 增至 `5,706,986`，DDP
+train-plus-final-evaluation wall time 由 `1,675s` 增至 `8,421s`。同为 H20、batch=2 的
+operator-only forward 实测为 `13.71` forecast frames/s（full-capacity；240 条 trajectory），
+而 retained Transolver 的短基准为 `57.44` frames/s。因此该 run 仅说明“独立 lag expert
+容量可以提高长程预测”，不构成结构效率结论，也不会替换 retained policy；`width-scale=0.5`
+parameter-matched history-MoE 是决定这一归因的必要对照。
+
 ### Geometry-conditioned routing and Expert Choice
 
 近期的 GINO 与 GNOT 提供了两条与本项目目标一致、但不需要 slot 的思路：GINO 在

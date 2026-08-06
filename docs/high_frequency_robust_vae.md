@@ -982,9 +982,15 @@ pooled context，显式再加 `G(\bar h)` 只造成重复的 regime 条件。因
 这两项负例将下一步从“再增 routing capacity”转向 decoder-aware training objective：对
 AR predicted latent 与 target latent 经冻结 HFVAE decoder 后计算 decoded MSE。它不更新
 VAE 参数，也不改变 NS 数据，只校正 latent MSE 与最终 decoded physical metric 的几何
-失配。训练中分别测试 `lambda_decoded=0.05` 与 `0.5`。单 batch calibration 显示 decoded
+失配。`lambda_decoded=0.05` 的 full-scale FNO 已完成，test latent/decoded physical 为
+`0.130446657/0.102709129`，相对 fixed `k=6` 退化 `6.55%/5.27%`，训练时间为
+`5665s`，约为 retained protocol 的 `2.68x`。单 batch calibration 显示 decoded
 high-pass MSE 仅为 decoded MSE 的约 `1.5e-6`，所以没有在此刻加入任意的高频权重，避免
 把数值上不可辨识的频带项伪装成物理监督。
+
+更强的 `lambda_decoded=0.5` FNO 对照
+`runs/ablation_ar4_fno_decoded_loss05_r1` 仍在运行；它只有在同时超过 latent
+`0.122424207` 和 physical `0.097570488` 时才会改变 retained protocol。
 
 ## 参考依据
 

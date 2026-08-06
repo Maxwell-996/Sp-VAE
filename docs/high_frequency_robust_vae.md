@@ -963,13 +963,28 @@ Token-wise `K={4,5,6,7,8}` 的 full-scale FNO AR4 已完成：test latent rollou
 以 `93.21%` 的 token 选择 `k=8`。因此模型确实在各层改变了使用的 expert 数量，但这种
 逐 token 的改变会在空间 operator 中引入不利的局部不连续性。
 
-下一步仅保留更受约束的 **sample-wise** cardinality：每个 sample/layer 从
-`K={6,7,8}` 选择唯一 `k`，所有空间 token 共享该 cardinality。它仍以 global pooled
-state 为输入并支持 `(value, coords, mask)`，但不再让邻近 token 因 cardinality 不同而
-具有不连续的 expert support。FNO AR4 full-scale artifact
-`runs/ablation_ar4_fno_sample_dynamic_topk6to8_r1` 正在运行，接受条件仍是同时低于
-`0.122424207` latent 与 `0.097570488` decoded physical；只有通过才扩展到 Transolver
-和 CNextU。
+更受约束的 **sample-wise** cardinality 也已完成：每个 sample/layer 从 `K={6,7,8}`
+选择唯一 `k`，所有空间 token 共享该 cardinality。它的 test latent/decoded physical 为
+`0.124027983/0.101981836`，相对 fixed `k=6` 仍退化 `1.31%/4.52%`。它同样没有停留在
+初始值：三个 hidden adapters 在测试中几乎总选择 `k=8`，第一个 adapter 的 `94.92%`
+sample 选择 `k=8`，output adapter 在 `k=6/7/8` 的比例为 `5.86%/35.94%/58.20%`。
+这表明 learned cardinality 在当前 FNO 中系统性偏向 dense mixture，却不能降低 physical
+rollout，因此 dynamic-k 的 token-wise 与 sample-wise 形式均停止，不扩展到其它 backbone。
+
+NESTOR 风格的 hierarchical global prior 也在固定 `k=6` 的 FNO AR4 中完整测试：
+`0.127992445` latent 与 `0.100795348` physical，相对 retained baseline 退化
+`4.55%/3.30%`。global prior 并未保持零初始化，其各 adapter 的 test soft probability
+明显非均匀且 sample standard deviation 最高约 `0.0121`；但现有 token router 已接收
+pooled context，显式再加 `G(\bar h)` 只造成重复的 regime 条件。因此该层级路由也作为
+有诊断证据的负例保留，artifact 为
+`runs/ablation_ar4_fno_hierarchical_global_r1`。
+
+这两项负例将下一步从“再增 routing capacity”转向 decoder-aware training objective：对
+AR predicted latent 与 target latent 经冻结 HFVAE decoder 后计算 decoded MSE。它不更新
+VAE 参数，也不改变 NS 数据，只校正 latent MSE 与最终 decoded physical metric 的几何
+失配。训练中分别测试 `lambda_decoded=0.05` 与 `0.5`。单 batch calibration 显示 decoded
+high-pass MSE 仅为 decoded MSE 的约 `1.5e-6`，所以没有在此刻加入任意的高频权重，避免
+把数值上不可辨识的频带项伪装成物理监督。
 
 ## 参考依据
 

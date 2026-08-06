@@ -39,6 +39,11 @@ def main() -> None:
     ap.add_argument("--operator-moe-top-k", type=int, default=2)
     ap.add_argument("--operator-moe-dynamic-top-k-min", type=int, default=None)
     ap.add_argument("--operator-moe-dynamic-top-k-max", type=int, default=None)
+    ap.add_argument(
+        "--operator-moe-dynamic-top-k-scope",
+        choices=["token", "sample"],
+        default="token",
+    )
     ap.add_argument("--operator-moe-hierarchical-global-routing", action="store_true")
     ap.add_argument("--operator-moe-shared-experts", type=int, default=2)
     ap.add_argument("--operator-moe-router-inhibition", action="store_true")
@@ -145,6 +150,8 @@ def main() -> None:
                 str(args.operator_moe_dynamic_top_k_min),
                 "--operator-moe-dynamic-top-k-max",
                 str(args.operator_moe_dynamic_top_k_max),
+                "--operator-moe-dynamic-top-k-scope",
+                args.operator_moe_dynamic_top_k_scope,
             ]
         )
     elif args.operator_moe_dynamic_top_k_max is not None:

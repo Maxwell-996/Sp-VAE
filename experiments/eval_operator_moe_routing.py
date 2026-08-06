@@ -215,6 +215,7 @@ def evaluate(args: argparse.Namespace) -> dict:
                     else []
                 ),
                 "dynamic_top_k_values": list(module.dynamic_top_k_values),
+                "dynamic_top_k_scope": module.dynamic_top_k_scope,
                 "dynamic_top_k_probability": (
                     (values["dynamic_top_k_probability"] / max(batches, 1)).tolist()
                     if module.cardinality_router is not None

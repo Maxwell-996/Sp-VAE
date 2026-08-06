@@ -239,6 +239,7 @@ class LearnableTokenMoE(nn.Module):
         router_noise_std: float = 0.0,
         dynamic_top_k_min: int | None = None,
         dynamic_top_k_max: int | None = None,
+        dynamic_top_k_scope: str = "token",
         hierarchical_global_routing: bool = False,
     ):
         super().__init__()
@@ -269,6 +270,8 @@ class LearnableTokenMoE(nn.Module):
                 )
             if not dynamic_top_k_min <= top_k <= dynamic_top_k_max:
                 raise ValueError("top_k must lie inside the dynamic top-k bounds")
+        if dynamic_top_k_scope not in {"token", "sample"}:
+            raise ValueError("dynamic_top_k_scope must be token or sample")
         self.channels = int(channels)
         self.hidden = int(hidden)
         self.num_experts = int(num_experts)
@@ -283,6 +286,7 @@ class LearnableTokenMoE(nn.Module):
             if dynamic_top_k_min is not None
             else ()
         )
+        self.dynamic_top_k_scope = dynamic_top_k_scope
         self.global_context_enabled = bool(global_context)
         self.adaptive_global = bool(adaptive_global)
         self.router_inhibition = bool(router_inhibition)
@@ -520,6 +524,7 @@ class LearnableTokenMoE(nn.Module):
                 else []
             ),
             "dynamic_top_k_values": list(self.dynamic_top_k_values),
+            "dynamic_top_k_scope": self.dynamic_top_k_scope,
             "dynamic_top_k_probability": (
                 self.last_cardinality_probability.detach().cpu().tolist()
                 if self.cardinality_router is not None
@@ -674,7 +679,12 @@ class LearnableTokenMoE(nn.Module):
                 candidate_selection.append(selected * valid)
             candidate_gates = torch.stack(candidate_gates, dim=2)
             candidate_selection = torch.stack(candidate_selection, dim=2)
-            cardinality_logits = self.cardinality_router(routed)
+            cardinality_features = (
+                routed
+                if self.dynamic_top_k_scope == "token"
+                else torch.cat((pooled, pooled), dim=-1)
+            )
+            cardinality_logits = self.cardinality_router(cardinality_features)
             cardinality_probability = torch.softmax(cardinality_logits, dim=-1)
             cardinality_index = cardinality_probability.argmax(dim=-1)
             cardinality_hard = F.one_hot(
@@ -688,6 +698,9 @@ class LearnableTokenMoE(nn.Module):
                 + cardinality_probability
                 - cardinality_probability.detach()
             )
+            if self.dynamic_top_k_scope == "sample":
+                cardinality_hard = cardinality_hard.expand(-1, n, -1)
+                cardinality_st = cardinality_st.expand(-1, n, -1)
             gates = torch.einsum("bnk,bnke->bne", cardinality_st, candidate_gates)
             selection = torch.einsum(
                 "bnk,bnke->bne", cardinality_hard, candidate_selection

@@ -98,6 +98,7 @@ class _CoordinateKernelExpert(nn.Module):
         hidden: int,
         expansion: int = 2,
         adaptive_radius: bool = False,
+        anisotropic_kernel: bool = False,
     ):
         super().__init__()
         attention_hidden = max(8, hidden // 2)
@@ -116,6 +117,10 @@ class _CoordinateKernelExpert(nn.Module):
         nn.init.zeros_(self.coordinate_bias[-1].weight)
         nn.init.zeros_(self.coordinate_bias[-1].bias)
         self.log_length_scale = nn.Parameter(torch.tensor(math.log(0.25)))
+        self.anisotropic_kernel = bool(anisotropic_kernel)
+        self.anisotropy_raw = (
+            nn.Parameter(torch.zeros(3, 3)) if self.anisotropic_kernel else None
+        )
         self.radius_router = (
             nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, 1))
             if adaptive_radius
@@ -165,6 +170,20 @@ class _CoordinateKernelExpert(nn.Module):
             float(self.last_effective_length_scale_max.detach().cpu()),
         ]
 
+    def anisotropy_stretches(self) -> list[float]:
+        if self.anisotropy_raw is None:
+            return []
+        matrix = self._anisotropy_matrix().detach().float()
+        return torch.linalg.svdvals(matrix).cpu().tolist()
+
+    def _anisotropy_matrix(self) -> torch.Tensor:
+        if self.anisotropy_raw is None:
+            raise RuntimeError("anisotropy matrix requested for isotropic expert")
+        raw = self.anisotropy_raw.clamp(-2.0, 2.0)
+        lower = torch.tril(raw, diagonal=-1)
+        diagonal = torch.diag(torch.exp(torch.diagonal(raw)))
+        return lower + diagonal
+
     def forward(
         self,
         x: torch.Tensor,
@@ -180,7 +199,13 @@ class _CoordinateKernelExpert(nn.Module):
         content_logits = content_logits / math.sqrt(query.shape[-1])
 
         delta = coords[:, :, None, :].float() - coords[:, None, :, :].float()
-        distance2 = delta.square().sum(dim=-1)
+        if self.anisotropy_raw is None:
+            distance2 = delta.square().sum(dim=-1)
+        else:
+            metric_delta = delta @ self._anisotropy_matrix().to(
+                device=delta.device, dtype=delta.dtype
+            )
+            distance2 = metric_delta.square().sum(dim=-1)
         scale = self.length_scale().to(dtype=x.dtype)
         if self.radius_router is not None:
             valid = mask[:, :, None].to(x.dtype)
@@ -231,6 +256,7 @@ class LearnableTokenMoE(nn.Module):
         adaptive_global: bool = False,
         coordinate_router: bool = False,
         high_frequency_scaling: bool = False,
+        anisotropic_kernel: bool = False,
         router_inhibition: bool = False,
         local_context: bool = False,
         adaptive_local_mix: bool = False,
@@ -255,6 +281,8 @@ class LearnableTokenMoE(nn.Module):
             raise ValueError("routing must be token_choice or expert_choice")
         if expert_kind not in {"mlp", "kernel", "adaptive_kernel"}:
             raise ValueError("expert_kind must be mlp, kernel, or adaptive_kernel")
+        if anisotropic_kernel and expert_kind == "mlp":
+            raise ValueError("anisotropic kernels require kernel or adaptive_kernel experts")
         if shared_experts < 1:
             raise ValueError("shared_experts must be positive")
         if router_noise_std < 0:
@@ -293,6 +321,7 @@ class LearnableTokenMoE(nn.Module):
         self.adaptive_global = bool(adaptive_global)
         self.coordinate_router_enabled = bool(coordinate_router)
         self.high_frequency_scaling_enabled = bool(high_frequency_scaling)
+        self.anisotropic_kernel_enabled = bool(anisotropic_kernel)
         self.router_inhibition = bool(router_inhibition)
         self.local_context_enabled = bool(local_context)
         self.adaptive_local_mix = bool(local_context and adaptive_local_mix)
@@ -369,6 +398,7 @@ class LearnableTokenMoE(nn.Module):
                     hidden,
                     expansion=expansion,
                     adaptive_radius=expert_kind == "adaptive_kernel",
+                    anisotropic_kernel=self.anisotropic_kernel_enabled,
                 )
                 for _ in range(num_experts)
             ]
@@ -540,6 +570,7 @@ class LearnableTokenMoE(nn.Module):
             "high_frequency_scaling": [
                 float(self.high_frequency_scaling_enabled)
             ],
+            "anisotropic_kernel": [float(self.anisotropic_kernel_enabled)],
             "local_scales": (
                 self.local_log_scales.detach().exp().cpu().tolist()
                 if self.local_log_scales is not None
@@ -568,6 +599,11 @@ class LearnableTokenMoE(nn.Module):
             "kernel_scale_stats": (
                 [expert.effective_length_scale_stats() for expert in self.experts]
                 if self.expert_kind in {"kernel", "adaptive_kernel"}
+                else []
+            ),
+            "kernel_anisotropy_stretches": (
+                [expert.anisotropy_stretches() for expert in self.experts]
+                if self.anisotropic_kernel_enabled
                 else []
             ),
             "dynamic_top_k_values": list(self.dynamic_top_k_values),

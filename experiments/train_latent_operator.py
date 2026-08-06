@@ -157,6 +157,7 @@ class OperatorMoEAdapter(torch.nn.Module):
             high_frequency_scaling=getattr(
                 args, "operator_moe_high_frequency_scaling", False
             ),
+            anisotropic_kernel=getattr(args, "operator_moe_anisotropic_kernel", False),
             router_inhibition=getattr(args, "operator_moe_router_inhibition", False),
             local_context=getattr(args, "operator_moe_local_context", False),
             adaptive_local_mix=getattr(args, "operator_moe_adaptive_local_mix", False),
@@ -323,6 +324,9 @@ class OperatorInternalMoE(torch.nn.Module):
                     ),
                     high_frequency_scaling=getattr(
                         args, "operator_moe_high_frequency_scaling", False
+                    ),
+                    anisotropic_kernel=getattr(
+                        args, "operator_moe_anisotropic_kernel", False
                     ),
                     router_inhibition=getattr(
                         args, "operator_moe_router_inhibition", False
@@ -844,6 +848,7 @@ def main() -> None:
     ap.add_argument("--operator-moe-global", action="store_true")
     ap.add_argument("--operator-moe-coordinate-router", action="store_true")
     ap.add_argument("--operator-moe-high-frequency-scaling", action="store_true")
+    ap.add_argument("--operator-moe-anisotropic-kernel", action="store_true")
     ap.add_argument(
         "--operator-moe-routing",
         choices=["token_choice", "expert_choice"],

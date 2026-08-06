@@ -39,6 +39,7 @@ def main() -> None:
     ap.add_argument("--operator-moe-top-k", type=int, default=2)
     ap.add_argument("--operator-moe-coordinate-router", action="store_true")
     ap.add_argument("--operator-moe-high-frequency-scaling", action="store_true")
+    ap.add_argument("--operator-moe-anisotropic-kernel", action="store_true")
     ap.add_argument("--operator-moe-dynamic-top-k-min", type=int, default=None)
     ap.add_argument("--operator-moe-dynamic-top-k-max", type=int, default=None)
     ap.add_argument(
@@ -148,6 +149,8 @@ def main() -> None:
         train_cmd.append("--operator-moe-coordinate-router")
     if args.operator_moe_high_frequency_scaling:
         train_cmd.append("--operator-moe-high-frequency-scaling")
+    if args.operator_moe_anisotropic_kernel:
+        train_cmd.append("--operator-moe-anisotropic-kernel")
     if args.operator_moe_router_inhibition:
         train_cmd.append("--operator-moe-router-inhibition")
     if args.operator_moe_local_context:

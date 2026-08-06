@@ -1044,6 +1044,32 @@ expert 处理，sample-level gate 对四个输出做凸组合。该方法不依�
 residual 和 parameter-matched history-MoE 均使用同一 latent cache、AR4 loss、seed 和
 240 条 test trajectories，最终以 decoded physical rollout 及高频诊断共同裁决。
 
+### Geometry-conditioned routing and Expert Choice
+
+近期的 GINO 与 GNOT 提供了两条与本项目目标一致、但不需要 slot 的思路：GINO 在
+不规则离散与连续 latent grid 之间用几何感知的编码/解码，再在 latent 空间使用
+operator；GNOT 则用带几何 gating 的 attention 处理多输入函数和不规则 mesh。两者的
+共同点不是增加 Fourier modes，而是让 query/token 的坐标和有效性成为 operator 的一等
+输入。GINO 论文见 https://arxiv.org/abs/2309.00583，GNOT 论文见
+https://arxiv.org/abs/2302.14376。
+
+当前 `LearnableTokenMoE` 已支持 `(value, coords, mask)`，coordinate-kernel expert
+使用连续相对坐标构造内容与距离联合的 kernel，输出仍写回原 token 位置。因此它可以
+处理 padding、缺失点和非规则 token；现有 NS protocol 只使用默认的规则 latent 坐标，
+所以目前只能声称“结构接口支持任意坐标”，不能声称已经完成 irregular-sampling 评估。
+
+下一项低风险且可归因的实验是 Expert-Choice routing：保持 expert 数、hidden、top-k、
+AR4 loss、seed、latent cache 和 residual policy 全部不变，只把 token-choice 改成每个
+expert 选择固定容量 token。这样可以检验 token-choice 的竞争/负载不均是否限制了高频
+局部 expert，而不会引入新的频带标签、slot 或 Fourier 假设。已提交的队列为：
+
+- FNO：`top-k=6, shared=1, residual`；
+- Transolver：`top-k=8, shared=4, residual`；
+- CNextU：`top-k=8, shared=1, non-residual`。
+
+这些结果在队列完成前不进入 retained policy；最终仍以 latent rollout、decoded physical
+rollout 和高频诊断三者共同裁决。
+
 ## 参考依据
 
 - Deconvolution and Checkerboard Artifacts, Distill 2016: transposed convolution 容易产生棋盘伪影，resize-convolution 是常用替代。

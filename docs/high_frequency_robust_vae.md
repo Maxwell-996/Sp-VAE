@@ -1030,6 +1030,20 @@ shared=1`，Transolver 保留 residual + `top-k=8, shared=4`，CNextU 保留 non
 `0.151418460/0.121553836` 再改善 `3.04%/3.46%`。若把 residual 强制用于三者，mean 反而
 变为 `0.149970062/0.119184803`，所以没有用统一结构掩盖 CNextU 的反例。
 
+### History-aware temporal MoE and parameter audit
+
+受 MoNO 的历史步分工启发，新增 `HistoryMixtureOperator`：每个 lag 由独立 operator
+expert 处理，sample-level gate 对四个输出做凸组合。该方法不依赖 slot、FFT 或规则采样，
+但直接复制完整 expert 会把参数量扩大约 `4x`，因此 full-capacity run 只能作为容量上界，
+不能直接和 retained single-operator 结果作公平的结构结论。
+
+在同一 `hidden=64` baseline 上，FNO/Transolver/CNextU 的参数量分别为
+`1,617,378/1,421,212/9,474,272`；full history-MoE 分别为
+`6,464,178/5,679,514/37,870,250`。将 backbone hidden 和 operator-MoE hidden 同时缩放到
+`32` 后，参数量变为 `1.051x/1.042x/1.023x` baseline。完整 full-capacity、implicit
+residual 和 parameter-matched history-MoE 均使用同一 latent cache、AR4 loss、seed 和
+240 条 test trajectories，最终以 decoded physical rollout 及高频诊断共同裁决。
+
 ## 参考依据
 
 - Deconvolution and Checkerboard Artifacts, Distill 2016: transposed convolution 容易产生棋盘伪影，resize-convolution 是常用替代。

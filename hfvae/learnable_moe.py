@@ -311,7 +311,6 @@ class LearnableTokenMoE(nn.Module):
         )
         self.coordinate_router = (
             nn.Sequential(
-                nn.LayerNorm(3),
                 nn.Linear(3, hidden),
                 nn.GELU(),
                 nn.Linear(hidden, num_experts),
@@ -500,6 +499,21 @@ class LearnableTokenMoE(nn.Module):
             mask = mask.to(device=device, dtype=torch.bool)
         return coords, mask
 
+    @staticmethod
+    def _normalized_router_coords(
+        coords: torch.Tensor, mask: torch.Tensor
+    ) -> torch.Tensor:
+        """Normalize geometry per sample without mixing coordinate axes."""
+        valid = mask[:, :, None].to(coords.dtype)
+        count = valid.sum(dim=1, keepdim=True).clamp_min(1.0)
+        center = (coords * valid).sum(dim=1, keepdim=True) / count
+        centered = (coords - center) * valid
+        scale = (
+            centered.square().sum(dim=(1, 2), keepdim=True)
+            / (count * coords.shape[-1])
+        ).sqrt().clamp_min(1e-6)
+        return centered / scale
+
     def balance_loss(self) -> torch.Tensor:
         """Switch-style importance/load penalty from the latest forward pass."""
         return self._balance_loss
@@ -647,7 +661,9 @@ class LearnableTokenMoE(nn.Module):
         temperature = self.log_temperature.exp().clamp(0.25, 4.0)
         logits = self.router(routed)
         if self.coordinate_router is not None:
-            logits = logits + self.coordinate_router(coords)
+            logits = logits + self.coordinate_router(
+                self._normalized_router_coords(coords, mask)
+            )
         if self.global_router is not None:
             global_logits = self.global_router(pooled)
             global_probability = torch.softmax(global_logits.squeeze(1), dim=-1)

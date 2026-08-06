@@ -988,9 +988,13 @@ VAE 参数，也不改变 NS 数据，只校正 latent MSE 与最终 decoded phy
 high-pass MSE 仅为 decoded MSE 的约 `1.5e-6`，所以没有在此刻加入任意的高频权重，避免
 把数值上不可辨识的频带项伪装成物理监督。
 
-更强的 `lambda_decoded=0.5` FNO 对照
-`runs/ablation_ar4_fno_decoded_loss05_r1` 仍在运行；它只有在同时超过 latent
-`0.122424207` 和 physical `0.097570488` 时才会改变 retained protocol。
+更强的 `lambda_decoded=0.5` FNO 对照也已完成，得到
+`0.135011337/0.107331263` latent/physical，相对 retained baseline 退化
+`10.28%/9.99%`，训练耗时 `5618s`。两个权重共同排除了“`0.05` 太弱”的解释：逐时刻
+decoded reconstruction 的梯度与 closed-loop latent stability 冲突，且 2.65-2.68x 的训练
+成本没有带来 physical 收益。实现保留为 optional research switch，artifact 分别为
+`runs/ablation_ar4_fno_decoded_loss005_r1` 与
+`runs/ablation_ar4_fno_decoded_loss05_r1`，但不进入默认或三 backbone 扩展。
 
 ## 参考依据
 

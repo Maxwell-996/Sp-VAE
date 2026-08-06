@@ -955,9 +955,21 @@ baseline 开始。它不是 slot attention：没有改变 token 数、token 顺�
 记录每层 `k` 的经验分布、mean/std，以及 global prior 的样本间方差，防止“指标改善但新
 路由没有真正被使用”的误判。
 
-两个 full-scale FNO AR4 jobs 的接受条件均是同时优于 retained FNO `k=6` 的 latent
-rollout `0.122424207` 和 decoded physical rollout `0.097570488`。仅通过 FNO gate 的
-设计才会扩展至 Transolver 与 CNextU；固定-k=5 的独立消融同时用于闭合整数 sweep。
+Token-wise `K={4,5,6,7,8}` 的 full-scale FNO AR4 已完成：test latent rollout 为
+`0.129954717`，decoded physical rollout 为 `0.105462629`，相对 retained fixed `k=6`
+分别退化 `6.15%/8.09%`，故不扩展至其它 backbone。该结论不能归因于 cardinality head
+未学习：16 个 test batch 中，四个 FNO hidden adapter 的 mean `k` 分别为
+`6.590, 6.204, 6.043, 7.864`，output adapter 为 `5.998`；例如最后一个 hidden adapter
+以 `93.21%` 的 token 选择 `k=8`。因此模型确实在各层改变了使用的 expert 数量，但这种
+逐 token 的改变会在空间 operator 中引入不利的局部不连续性。
+
+下一步仅保留更受约束的 **sample-wise** cardinality：每个 sample/layer 从
+`K={6,7,8}` 选择唯一 `k`，所有空间 token 共享该 cardinality。它仍以 global pooled
+state 为输入并支持 `(value, coords, mask)`，但不再让邻近 token 因 cardinality 不同而
+具有不连续的 expert support。FNO AR4 full-scale artifact
+`runs/ablation_ar4_fno_sample_dynamic_topk6to8_r1` 正在运行，接受条件仍是同时低于
+`0.122424207` latent 与 `0.097570488` decoded physical；只有通过才扩展到 Transolver
+和 CNextU。
 
 ## 参考依据
 

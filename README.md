@@ -16,3 +16,35 @@ The `/media/home/lizhonghao/diff_pde` repository is treated as read-only referen
 - `experiments/train_latent_operator.py`: latent autoregressive tests for FNO, Transolver, and CNextU.
 - `experiments/eval_operator_physical.py`: decode latent rollouts and measure physical-field error.
 - `docs/high_frequency_robust_vae.md`: math notes and recommended commands.
+- `configs/final_hfvae_global_dense8.json`: frozen current VAE candidate profile.
+- `hfvae/final_profile.py`: profile validation and exact model builder.
+- `tests/test_final_profile.py`: architecture and tensor-shape smoke test.
+
+## Frozen VAE profile
+
+The current VAE candidate is explicitly frozen as `final_hfvae_global_dense8`.
+It is a Wan2.2 causal 3D VAE with spatial anti-aliasing, latent/output HFS,
+soft decoder spectral filtering, and a latent-only global+dense Token-MoE with
+8 experts, top-k=8, and 2 shared experts. Output MoE, frequency-band MoE,
+coordinate/local experts, dynamic routing, and temporal-difference objectives
+are not part of this profile. Historical research switches remain available in
+`hfvae/wan22_hf_vae.py` for provenance, but should not be used when reproducing
+the frozen candidate.
+
+Validate and construct the frozen architecture without data:
+
+```bash
+python -m unittest tests.test_final_profile
+```
+
+The canonical training invocation is:
+
+```bash
+python experiments/train_hf_vae.py \
+  --config configs/final_hfvae_global_dense8.json
+```
+
+The JSON profile values override command-line defaults and are copied into the
+training checkpoint metadata. The profile is a frozen candidate for this
+research repository; it is not a claim that the architecture is globally
+optimal for every downstream dynamics model.

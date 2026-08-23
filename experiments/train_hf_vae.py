@@ -21,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from hfvae.losses import HFVAELossConfig, compute_vae_loss
 from hfvae.ns_data import NSShardDataset, ShardContiguousSampler, resolve_data_root, resize_video
+from hfvae.final_profile import flatten_profile, load_profile
 from hfvae.wan22_hf_vae import WanVAEHF
 
 
@@ -45,11 +46,14 @@ class _LossModule(torch.nn.Module):
 def build_model(args) -> WanVAEHF:
     return WanVAEHF(
         dim=args.dim,
-        dec_dim=args.dim,
+        dec_dim=getattr(args, "dec_dim", args.dim),
         z_dim=args.z_dim,
-        dim_mult=[1, 2, 4, 4],
-        temperal_downsample=[True, True, False],
+        dim_mult=getattr(args, "dim_mult", [1, 2, 4, 4]),
+        temperal_downsample=getattr(
+            args, "temperal_downsample", [True, True, False]
+        ),
         patch_size=args.patch_size,
+        input_channels=getattr(args, "input_channels", 3),
         anti_alias=args.anti_alias,
         latent_hfs=args.latent_hfs,
         output_hfs=args.output_hfs,
@@ -84,6 +88,20 @@ def build_model(args) -> WanVAEHF:
     )
 
 
+def apply_profile_config(args):
+    """Apply a structured JSON profile after argparse so profile values are canonical."""
+    if not args.config:
+        args.profile = None
+        args.profile_path = None
+        return args
+    profile = load_profile(args.config)
+    for key, value in flatten_profile(profile).items():
+        setattr(args, key, value)
+    args.profile = profile.get("profile")
+    args.profile_path = str(Path(args.config).resolve())
+    return args
+
+
 def rel_l2(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return (pred - target).square().mean().sqrt() / (target.square().mean().sqrt() + 1e-8)
 
@@ -112,6 +130,11 @@ def validate(model, loader, args, device, distributed: bool) -> float:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--config",
+        default=None,
+        help="JSON profile; values in the profile are canonical and override CLI defaults.",
+    )
     ap.add_argument("--data-root", default=None, help="Read-only root with train/valid shards.")
     ap.add_argument("--out-dir", default="runs/hf_vae", help="Local output directory in this workspace.")
     ap.add_argument("--tag", default="hfvae")
@@ -192,6 +215,8 @@ def main() -> None:
     ap.add_argument("--sobolev-s", type=float, default=1.0)
     ap.add_argument("--consistency-noise", type=float, default=0.05)
     args = ap.parse_args()
+
+    args = apply_profile_config(args)
 
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     distributed = world_size > 1

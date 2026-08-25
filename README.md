@@ -19,6 +19,7 @@ The `/media/home/lizhonghao/diff_pde` repository is treated as read-only referen
 - `configs/final_hfvae_global_dense8.json`: frozen current VAE candidate profile.
 - `hfvae/final_profile.py`: profile validation and exact model builder.
 - `tests/test_final_profile.py`: architecture and tensor-shape smoke test.
+- `docs/codex_handoff_zh.md`: handoff dossier for continuing the project in a new environment.
 
 ## Frozen VAE profile
 
